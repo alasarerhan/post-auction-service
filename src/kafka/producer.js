@@ -1,63 +1,26 @@
 const { Kafka } = require("kafkajs");
-const dotenv = require("dotenv");
-
-dotenv.config();
-
-const brokers = (process.env.KAFKA_BROKERS || "")
-  .split(",")
-  .map((broker) => broker.trim())
-  .filter(Boolean);
+const { buildKafkaConfig, hasKafkaBrokers } = require("./config");
+const topics = require("./topics");
+const { validateEventOrThrow } = require("./schema-registry");
 
 let producer;
 let isConnected = false;
 
-function parseBoolean(value) {
-  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+function isAuctionEventTopic(topic) {
+  return Object.values(topics.publishedTopics).includes(topic);
 }
 
-function parseMultiline(value) {
-  return value ? value.replace(/\\n/g, "\n") : undefined;
-}
-
-function buildKafkaConfig() {
-  const sslEnabled = process.env.KAFKA_SSL ? parseBoolean(process.env.KAFKA_SSL) : true;
-  const username = process.env.KAFKA_SASL_USERNAME;
-  const password = process.env.KAFKA_SASL_PASSWORD;
-  const ca = parseMultiline(process.env.KAFKA_SSL_CA);
-  const cert = parseMultiline(process.env.KAFKA_SSL_CERT);
-  const key = parseMultiline(process.env.KAFKA_SSL_KEY);
-
-  let ssl = undefined;
-  if (sslEnabled) {
-    if (ca || cert || key) {
-      ssl = {
-        rejectUnauthorized: !parseBoolean(process.env.KAFKA_SSL_REJECT_UNAUTHORIZED_FALSE),
-        ca: ca ? [ca] : undefined,
-        cert,
-        key
-      };
-    } else {
-      ssl = true;
-    }
-  }
+function buildMessage(payload, key) {
+  const messageKey = key || payload.sessionId;
 
   return {
-    clientId: process.env.KAFKA_CLIENT_ID || "auction-bidding-service",
-    brokers,
-    ssl,
-    sasl:
-      username && password
-        ? {
-            mechanism: "plain",
-            username,
-            password
-          }
-        : undefined
+    key: messageKey ? String(messageKey) : undefined,
+    value: JSON.stringify(payload)
   };
 }
 
 function getProducer() {
-  if (!brokers.length) {
+  if (!hasKafkaBrokers()) {
     return null;
   }
 
@@ -80,7 +43,24 @@ async function connect() {
   isConnected = true;
 }
 
+function validatePublishContract(topic, payload, key) {
+  validateEventOrThrow(topic, payload);
+
+  if (!isAuctionEventTopic(topic)) {
+    return;
+  }
+
+  if (!payload.sessionId || typeof payload.sessionId !== "string") {
+    throw new Error(`Auction event ${topic} must include a string sessionId`);
+  }
+
+  if (String(key || payload.sessionId) !== payload.sessionId) {
+    throw new Error(`Kafka key for topic ${topic} must exactly match payload.sessionId`);
+  }
+}
+
 async function publish(topic, payload, key) {
+  validatePublishContract(topic, payload, key);
   const instance = getProducer();
 
   if (!instance) {
@@ -94,16 +74,7 @@ async function publish(topic, payload, key) {
 
   await instance.send({
     topic,
-    messages: [
-      {
-        key: key ? String(key) : undefined,
-        value: JSON.stringify(payload),
-        headers: {
-          "content-type": "application/json",
-          "eventType": topic
-        }
-      }
-    ]
+    messages: [buildMessage(payload, key)]
   });
 }
 

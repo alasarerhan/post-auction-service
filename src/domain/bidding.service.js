@@ -14,10 +14,11 @@ async function withTx(action) {
     const registerEvent = async (eventType, aggregateType, aggregateId, payload, topic, key) => {
       const eventId = crypto.randomUUID();
       const occurredAt = new Date().toISOString();
-
-      // Ensure exact payload field mapping to conform strictly to schema (no extra properties)
-      payload.eventId = eventId;
-      payload.occurredAt = occurredAt;
+      const eventPayload = {
+        ...payload,
+        eventId,
+        occurredAt
+      };
 
       const res = await client.query(
         `
@@ -25,14 +26,14 @@ async function withTx(action) {
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           RETURNING id
         `,
-        [eventId, aggregateType, aggregateId, eventType, payload, topic, key, occurredAt]
+        [eventId, aggregateType, aggregateId, eventType, eventPayload, topic, key, occurredAt]
       );
 
       eventsToPublish.push({
         id: res.rows[0].id,
         topic,
         key,
-        payload
+        payload: eventPayload
       });
     };
 

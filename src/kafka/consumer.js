@@ -1,63 +1,11 @@
 const { Kafka } = require("kafkajs");
-const dotenv = require("dotenv");
 
 const biddingService = require("../domain/bidding.service");
+const { buildKafkaConfig, getKafkaGroupId, hasKafkaBrokers } = require("./config");
 const topics = require("./topics");
-
-dotenv.config();
-
-const brokers = (process.env.KAFKA_BROKERS || "")
-  .split(",")
-  .map((broker) => broker.trim())
-  .filter(Boolean);
 
 let consumer;
 let started = false;
-
-function parseBoolean(value) {
-  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
-}
-
-function parseMultiline(value) {
-  return value ? value.replace(/\\n/g, "\n") : undefined;
-}
-
-function buildKafkaConfig() {
-  const sslEnabled = process.env.KAFKA_SSL ? parseBoolean(process.env.KAFKA_SSL) : true;
-  const username = process.env.KAFKA_SASL_USERNAME;
-  const password = process.env.KAFKA_SASL_PASSWORD;
-  const ca = parseMultiline(process.env.KAFKA_SSL_CA);
-  const cert = parseMultiline(process.env.KAFKA_SSL_CERT);
-  const key = parseMultiline(process.env.KAFKA_SSL_KEY);
-
-  let ssl = undefined;
-  if (sslEnabled) {
-    if (ca || cert || key) {
-      ssl = {
-        rejectUnauthorized: !parseBoolean(process.env.KAFKA_SSL_REJECT_UNAUTHORIZED_FALSE),
-        ca: ca ? [ca] : undefined,
-        cert,
-        key
-      };
-    } else {
-      ssl = true;
-    }
-  }
-
-  return {
-    clientId: process.env.KAFKA_CLIENT_ID || "auction-bidding-service",
-    brokers,
-    ssl,
-    sasl:
-      username && password
-        ? {
-            mechanism: "plain",
-            username,
-            password
-          }
-        : undefined
-  };
-}
 
 function parseMessage(message) {
   try {
@@ -69,8 +17,8 @@ function parseMessage(message) {
 }
 
 async function start() {
-  if (!brokers.length || started) {
-    if (!brokers.length) {
+  if (!hasKafkaBrokers() || started) {
+    if (!hasKafkaBrokers()) {
       console.log("Kafka consumer disabled because KAFKA_BROKERS is not configured.");
     }
     return;
@@ -79,7 +27,7 @@ async function start() {
   const kafka = new Kafka(buildKafkaConfig());
 
   consumer = kafka.consumer({
-    groupId: process.env.KAFKA_GROUP_ID || "auction-bidding-service"
+    groupId: getKafkaGroupId()
   });
 
   await consumer.connect();
