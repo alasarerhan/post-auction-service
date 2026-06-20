@@ -36,14 +36,6 @@
   <body data-page="home" data-snapshot-token="<%= snapshotToken %>">
     <div id="liveBanner" class="card" style="display: none;">Live update received. Refreshing view...</div>
     <div class="card">
-      <h1>BID Service Home</h1>
-      <p>Event-driven auction and bidding dashboard.</p>
-      <% if (error) { %>
-        <p><%= error %></p>
-      <% } %>
-    </div>
-
-    <div class="card">
       <h2>Auction Sessions</h2>
       <% if (!sessions.length) { %>
         <p>No local auction sessions yet. Waiting for real Kafka catalog events from other services.</p>
