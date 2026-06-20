@@ -1,35 +1,115 @@
+const crypto = require("crypto");
 const pool = require("../db/pool");
 const producer = require("../kafka/producer");
 const topics = require("../kafka/topics");
 const { getIo } = require("../sockets/socket");
 
-function createEvent(eventType, aggregateType, aggregateId, payload, topic) {
-  return {
-    eventType,
-    aggregateType,
-    aggregateId,
-    payload,
-    topic
-  };
-}
+async function withTx(action) {
+  const client = await pool.connect();
+  let committed = false;
+  const eventsToPublish = [];
+  try {
+    await client.query("BEGIN");
 
-async function insertEvents(client, events) {
-  for (const event of events) {
-    await client.query(
-      `
-        INSERT INTO event_store (aggregate_type, aggregate_id, event_type, payload)
-        VALUES ($1, $2, $3, $4)
-      `,
-      [event.aggregateType, event.aggregateId, event.eventType, event.payload]
-    );
+    const registerEvent = async (eventType, aggregateType, aggregateId, payload, topic, key) => {
+      const eventId = crypto.randomUUID();
+      const occurredAt = new Date().toISOString();
+
+      // Ensure exact payload field mapping to conform strictly to schema (no extra properties)
+      payload.eventId = eventId;
+      payload.occurredAt = occurredAt;
+
+      const res = await client.query(
+        `
+          INSERT INTO event_store (event_id, aggregate_type, aggregate_id, event_type, payload, topic, key, occurred_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING id
+        `,
+        [eventId, aggregateType, aggregateId, eventType, payload, topic, key, occurredAt]
+      );
+
+      eventsToPublish.push({
+        id: res.rows[0].id,
+        topic,
+        key,
+        payload
+      });
+    };
+
+    const result = await action(client, registerEvent);
+
+    await client.query("COMMIT");
+    committed = true;
+
+    // Publish to Kafka post-commit
+    for (const ev of eventsToPublish) {
+      try {
+        await producer.publish(ev.topic, ev.payload, ev.key);
+        await pool.query(
+          `UPDATE event_store SET published_at = NOW(), publish_error = NULL WHERE id = $1`,
+          [ev.id]
+        );
+      } catch (err) {
+        console.error(`Failed to publish event ${ev.id} to topic ${ev.topic}:`, err.message);
+        await pool.query(
+          `UPDATE event_store SET publish_error = $1 WHERE id = $2`,
+          [err.message, ev.id]
+        );
+      }
+    }
+
+    return result;
+  } catch (error) {
+    if (!committed) {
+      await client.query("ROLLBACK");
+    }
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-async function publishEvents(events) {
-  for (const event of events) {
-    if (event.topic) {
-      await producer.publish(event.topic, event.payload);
+async function flushUnpublishedOutbox() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Batch of 100 with SKIP LOCKED for safe concurrent flushing
+    const result = await client.query(
+      `SELECT id, topic, key, payload FROM event_store
+       WHERE published_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT 100
+       FOR UPDATE SKIP LOCKED`
+    );
+
+    if (result.rows.length === 0) {
+      await client.query("COMMIT");
+      return;
     }
+
+    console.log(`Flushing ${result.rows.length} unpublished events from outbox...`);
+
+    for (const ev of result.rows) {
+      try {
+        await producer.publish(ev.topic, ev.payload, ev.key);
+        await client.query(
+          `UPDATE event_store SET published_at = NOW(), publish_error = NULL WHERE id = $1`,
+          [ev.id]
+        );
+      } catch (err) {
+        console.error(`Failed to publish outbox event ${ev.id}:`, err.message);
+        await client.query(
+          `UPDATE event_store SET publish_error = $1 WHERE id = $2`,
+          [err.message, ev.id]
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Error during flushUnpublishedOutbox:", err.message);
+  } finally {
+    client.release();
   }
 }
 
@@ -43,11 +123,10 @@ async function getHomeData() {
         COUNT(b.basket_id) AS basket_count
       FROM auction_sessions s
       LEFT JOIN auction_baskets b ON b.session_id = s.session_id
-      GROUP BY s.session_id
+      GROUP BY s.session_id, s.title, s.status, s.created_at
       ORDER BY s.created_at DESC
     `
   );
-
   return result.rows;
 }
 
@@ -60,9 +139,7 @@ async function getHomeSnapshot() {
       FROM auction_sessions
     `
   );
-
   const row = result.rows[0];
-
   return {
     token: `${row.session_count}:${new Date(row.last_updated).toISOString()}`
   };
@@ -71,7 +148,7 @@ async function getHomeSnapshot() {
 async function getAuctionDashboard(sessionId) {
   const sessionResult = await pool.query(
     `
-      SELECT session_id, title, status
+      SELECT session_id, title, status, rebid_round
       FROM auction_sessions
       WHERE session_id = $1
     `,
@@ -84,7 +161,7 @@ async function getAuctionDashboard(sessionId) {
 
   const basketsResult = await pool.query(
     `
-      SELECT basket_id, basket_no, description, starting_price, status, highest_bid, opened_at, closed_at
+      SELECT basket_id, basket_no, description, base_price, details_ready, status, highest_bid, opened_at, closed_at
       FROM auction_baskets
       WHERE session_id = $1
       ORDER BY basket_no NULLS LAST, created_at
@@ -94,8 +171,10 @@ async function getAuctionDashboard(sessionId) {
 
   const currentBasket =
     basketsResult.rows.find((basket) => basket.status === "OPEN") ||
-    basketsResult.rows.find((basket) => basket.status === "PENDING") ||
-    basketsResult.rows.find((basket) => basket.status === "UNSOLD");
+    basketsResult.rows.find((basket) => basket.status === "REBID_READY") ||
+    basketsResult.rows.find((basket) => basket.status === "LISTED") ||
+    basketsResult.rows.find((basket) => basket.status === "REBID_QUEUED") ||
+    basketsResult.rows.find((basket) => basket.status === "FINAL_UNSOLD");
 
   const bidsResult = currentBasket
     ? await pool.query(
@@ -120,23 +199,13 @@ async function getAuctionDashboard(sessionId) {
     [sessionId]
   );
 
-  const salesResult = await pool.query(
-    `
-      SELECT basket_id, winner_id, winning_bid_amount, payment_confirmed, sold_at
-      FROM sale_records
-      WHERE session_id = $1
-      ORDER BY sold_at DESC
-    `,
-    [sessionId]
-  );
-
   return {
     session: sessionResult.rows[0],
     baskets: basketsResult.rows,
     currentBasket,
     bids: bidsResult.rows,
     rebidQueue: rebidQueueResult.rows,
-    sales: salesResult.rows
+    sales: []
   };
 }
 
@@ -171,15 +240,59 @@ async function getAuctionSnapshot(sessionId) {
   };
 }
 
+async function startAuction(sessionId) {
+  await withTx(async (client, registerEvent) => {
+    const sessionRes = await client.query(
+      `SELECT session_id, status FROM auction_sessions WHERE session_id = $1 FOR UPDATE`,
+      [sessionId]
+    );
+
+    if (!sessionRes.rows.length) {
+      throw new Error("Auction session not found.");
+    }
+
+    const session = sessionRes.rows[0];
+    if (session.status !== "READY") {
+      throw new Error(`Only READY sessions can be started. Current status: ${session.status}`);
+    }
+
+    const basketsCountRes = await client.query(
+      `SELECT COUNT(*)::int AS count FROM auction_baskets WHERE session_id = $1`,
+      [sessionId]
+    );
+    const totalBaskets = basketsCountRes.rows[0].count;
+    const startTime = new Date().toISOString();
+
+    await client.query(
+      `UPDATE auction_sessions SET status = 'LIVE', start_time = $2, updated_at = NOW() WHERE session_id = $1`,
+      [sessionId, startTime]
+    );
+
+    const payload = {
+      sessionId,
+      startTime,
+      totalBaskets
+    };
+
+    await registerEvent(
+      "auction.session.started",
+      "auction_session",
+      sessionId,
+      payload,
+      topics.publishedTopics.AUCTION_SESSION_STARTED,
+      sessionId
+    );
+  });
+
+  getIo().emit("homeUpdated", { sessionId, eventType: "auctionStarted" });
+  getIo().to(sessionId).emit("sessionProjectionUpdated", { sessionId, eventType: "auctionStarted" });
+}
+
 async function openBasket(sessionId, basketId) {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
+  await withTx(async (client, registerEvent) => {
     const basketResult = await client.query(
       `
-        SELECT basket_id, basket_no, description, status
+        SELECT basket_id, base_price, details_ready, status
         FROM auction_baskets
         WHERE session_id = $1 AND basket_id = $2
         FOR UPDATE
@@ -193,18 +306,23 @@ async function openBasket(sessionId, basketId) {
 
     const basket = basketResult.rows[0];
 
-    if (!["PENDING", "UNSOLD"].includes(basket.status)) {
-      throw new Error("Only pending or unsold baskets can be opened.");
+    if (!["LISTED", "REBID_READY"].includes(basket.status)) {
+      throw new Error("Only LISTED or REBID_READY baskets can be opened.");
     }
 
+    if (!basket.details_ready || basket.base_price === null) {
+      throw new Error("Basket details are not ready yet (missing base price).");
+    }
+
+    // Check if another basket is currently open
     const openBasketResult = await client.query(
       `
         SELECT basket_id
         FROM auction_baskets
-        WHERE session_id = $1 AND status = 'OPEN' AND basket_id <> $2
+        WHERE session_id = $1 AND status = 'OPEN'
         LIMIT 1
       `,
-      [sessionId, basketId]
+      [sessionId]
     );
 
     if (openBasketResult.rows.length) {
@@ -220,79 +338,47 @@ async function openBasket(sessionId, basketId) {
       [basketId]
     );
 
-    const rebidRow = await client.query(
-      `
-        UPDATE rebid_queue
-        SET status = 'OPENED'
-        WHERE basket_id = $1 AND status = 'PENDING'
-        RETURNING id
-      `,
-      [basketId]
-    );
-
-    const events = [
-      createEvent(
-        "BasketOpened",
-        "auction_basket",
-        basketId,
-        {
-          sessionId,
-          basketId,
-          basketNo: basket.basket_no,
-          description: basket.description
-        },
-        topics.publishedTopics.BASKET_DETAILS_ANNOUNCED
-      )
-    ];
-
-    if (rebidRow.rows.length) {
-      events.push(
-        createEvent(
-          "RebidRoundOpened",
-          "rebid_queue",
-          String(rebidRow.rows[0].id),
-          {
-            sessionId,
-            basketId
-          },
-          topics.publishedTopics.REBID_ROUND_OPENED
-        )
-      );
-    }
-
-    await insertEvents(client, events);
-    await client.query("COMMIT");
-
-    await publishEvents(events);
-    getIo().to(sessionId).emit("basketOpened", {
+    const payload = {
       sessionId,
-      basketId
-    });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+      basketId,
+      basePrice: Number(basket.base_price)
+    };
+
+    await registerEvent(
+      "auction.basket.opened",
+      "auction_basket",
+      basketId,
+      payload,
+      topics.publishedTopics.AUCTION_BASKET_OPENED,
+      sessionId
+    );
+  });
+
+  getIo().to(sessionId).emit("basketOpened", { sessionId, basketId });
 }
 
 async function placeBid(sessionId, basketId, bidData) {
   const amount = Number(bidData.amount);
   const bidderId = String(bidData.bidderId || "").trim();
-  const bidderName = String(bidData.bidderName || "").trim();
 
-  if (!bidderId || !bidderName || Number.isNaN(amount)) {
-    throw new Error("Bidder id, bidder name, and amount are required.");
+  if (!bidderId || Number.isNaN(amount)) {
+    throw new Error("Bidder id and amount are required.");
   }
 
-  const client = await pool.connect();
+  const resultPayload = await withTx(async (client, registerEvent) => {
+    // Validate session is LIVE
+    const sessionRes = await client.query(
+      `SELECT status FROM auction_sessions WHERE session_id = $1`,
+      [sessionId]
+    );
+    if (!sessionRes.rows.length || sessionRes.rows[0].status !== "LIVE") {
+      throw new Error("Bidding is only allowed when the auction session is LIVE.");
+    }
 
-  try {
-    await client.query("BEGIN");
-
+    // Validate basket is OPEN
     const basketResult = await client.query(
       `
-        SELECT basket_id, basket_no, status, starting_price, COALESCE(highest_bid, 0) AS highest_bid
+        SELECT basket_id, base_price, status, COALESCE(highest_bid, 0) AS highest_bid
         FROM auction_baskets
         WHERE session_id = $1 AND basket_id = $2
         FOR UPDATE
@@ -310,10 +396,26 @@ async function placeBid(sessionId, basketId, bidData) {
       throw new Error("Basket is not open for bidding.");
     }
 
-    const currentHighest = Number(basket.highest_bid || basket.starting_price || 0);
+    // Validate buyer exists
+    const buyerRes = await client.query(
+      `SELECT name FROM buyers_projection WHERE buyer_id = $1`,
+      [bidderId]
+    );
+    if (!buyerRes.rows.length) {
+      throw new Error("Bidder does not exist in buyers_projection.");
+    }
+    const bidderName = buyerRes.rows[0].name;
+
+    // Validate bid amount
+    const basePrice = Number(basket.base_price);
+    const currentHighest = Number(basket.highest_bid);
+
+    if (amount < basePrice) {
+      throw new Error(`Bid amount must be greater than or equal to the base price of ${basePrice}.`);
+    }
 
     if (amount <= currentHighest) {
-      throw new Error("Bid amount must be greater than the current highest bid.");
+      throw new Error(`Bid amount must be greater than the current highest bid of ${currentHighest}.`);
     }
 
     const bidInsert = await client.query(
@@ -337,42 +439,34 @@ async function placeBid(sessionId, basketId, bidData) {
     const payload = {
       sessionId,
       basketId,
-      basketNo: basket.basket_no,
-      bidId: bidInsert.rows[0].id,
-      bidderId,
-      bidderName,
-      amount,
-      placedAt: bidInsert.rows[0].placed_at
+      buyerId: bidderId,
+      bidId: String(bidInsert.rows[0].id),
+      bidAmount: amount
     };
 
-    const events = [
-      createEvent("BidPlaced", "auction_basket", basketId, payload, topics.publishedTopics.BID_PLACED)
-    ];
-
-    await insertEvents(client, events);
-    await client.query("COMMIT");
-
-    await publishEvents(events);
-    getIo().to(sessionId).emit("bidPlaced", payload);
+    await registerEvent(
+      "bid.placed",
+      "auction_basket",
+      basketId,
+      payload,
+      topics.publishedTopics.BID_PLACED,
+      sessionId
+    );
 
     return payload;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
+
+  getIo().to(sessionId).emit("bidPlaced", resultPayload);
+  return resultPayload;
 }
 
 async function closeBasket(sessionId, basketId) {
-  const client = await pool.connect();
+  let isSessionFinalized = false;
 
-  try {
-    await client.query("BEGIN");
-
+  await withTx(async (client, registerEvent) => {
     const basketResult = await client.query(
       `
-        SELECT basket_id, basket_no, description, status
+        SELECT basket_id, status
         FROM auction_baskets
         WHERE session_id = $1 AND basket_id = $2
         FOR UPDATE
@@ -392,7 +486,7 @@ async function closeBasket(sessionId, basketId) {
 
     const highestBidResult = await client.query(
       `
-        SELECT id, bidder_id, bidder_name, amount, placed_at
+        SELECT id, bidder_id, amount
         FROM bids
         WHERE basket_id = $1
         ORDER BY amount DESC, placed_at ASC
@@ -401,143 +495,374 @@ async function closeBasket(sessionId, basketId) {
       [basketId]
     );
 
-    const events = [
-      createEvent(
-        "BidWindowClosed",
-        "auction_basket",
-        basketId,
-        { sessionId, basketId },
-        topics.publishedTopics.WINDOW_CLOSED
-      )
-    ];
-
-    await client.query(
-      `
-        UPDATE auction_baskets
-        SET closed_at = NOW(), updated_at = NOW()
-        WHERE basket_id = $1
-      `,
-      [basketId]
-    );
-
-    let outcome;
-
     if (highestBidResult.rows.length) {
       const winningBid = highestBidResult.rows[0];
 
       await client.query(
         `
           UPDATE auction_baskets
-          SET status = 'SOLD', highest_bid = $2, updated_at = NOW()
-          WHERE basket_id = $1
-        `,
-        [basketId, winningBid.amount]
-      );
-
-      await client.query(
-        `
-          INSERT INTO sale_records
-            (session_id, basket_id, winning_bid_id, winner_id, winning_bid_amount)
-          VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT (basket_id)
-          DO UPDATE SET
-            winning_bid_id = EXCLUDED.winning_bid_id,
-            winner_id = EXCLUDED.winner_id,
-            winning_bid_amount = EXCLUDED.winning_bid_amount
-        `,
-        [sessionId, basketId, winningBid.id, winningBid.bidder_id, winningBid.amount]
-      );
-
-      outcome = {
-        sessionId,
-        basketId,
-        basketNo: basket.basket_no,
-        winningBidId: winningBid.id,
-        winnerId: winningBid.bidder_id,
-        winnerName: winningBid.bidder_name,
-        winningAmount: Number(winningBid.amount)
-      };
-
-      events.push(
-        createEvent("BasketSold", "auction_basket", basketId, outcome, topics.publishedTopics.BASKET_SOLD),
-        createEvent(
-          "WinningBidRecorded",
-          "sale_record",
-          basketId,
-          outcome,
-          topics.publishedTopics.WINNING_BID_RECORDED
-        )
-      );
-    } else {
-      await client.query(
-        `
-          UPDATE auction_baskets
-          SET status = 'UNSOLD', updated_at = NOW()
+          SET status = 'SOLD', closed_at = NOW(), updated_at = NOW()
           WHERE basket_id = $1
         `,
         [basketId]
       );
 
-      await client.query(
-        `
-          INSERT INTO rebid_queue (session_id, basket_id, reason, status)
-          VALUES ($1, $2, $3, 'PENDING')
-          ON CONFLICT (basket_id)
-          DO UPDATE SET
-            reason = EXCLUDED.reason,
-            status = 'PENDING',
-            queued_at = NOW()
-        `,
-        [sessionId, basketId, "No bids received in active window"]
-      );
-
-      outcome = {
+      const payload = {
         sessionId,
         basketId,
-        basketNo: basket.basket_no,
-        reason: "No bids received in active window"
+        buyerId: winningBid.bidder_id,
+        winningBidId: String(winningBid.id),
+        salePrice: Number(winningBid.amount)
       };
 
-      events.push(
-        createEvent("BasketUnsold", "auction_basket", basketId, outcome, topics.publishedTopics.BASKET_UNSOLD),
-        createEvent(
-          "BasketQueuedForRebid",
-          "rebid_queue",
-          basketId,
-          outcome,
-          topics.publishedTopics.BASKET_QUEUED_FOR_REBID
-        )
+      await registerEvent(
+        "bid.basket.sold",
+        "auction_basket",
+        basketId,
+        payload,
+        topics.publishedTopics.BID_BASKET_SOLD,
+        sessionId
+      );
+    } else {
+      // Check if this basket has already been in a rebid round (OPENED in rebid_queue)
+      const rebidCheck = await client.query(
+        `SELECT id FROM rebid_queue WHERE basket_id = $1 AND status = 'OPENED'`,
+        [basketId]
+      );
+
+      if (rebidCheck.rows.length) {
+        // Mark FINAL_UNSOLD
+        await client.query(
+          `
+            UPDATE auction_baskets
+            SET status = 'FINAL_UNSOLD', closed_at = NOW(), updated_at = NOW()
+            WHERE basket_id = $1
+          `,
+          [basketId]
+        );
+
+        await client.query(
+          `
+            UPDATE rebid_queue
+            SET status = 'FINAL_UNSOLD'
+            WHERE basket_id = $1
+          `,
+          [basketId]
+        );
+      } else {
+        // Mark REBID_QUEUED
+        await client.query(
+          `
+            UPDATE auction_baskets
+            SET status = 'REBID_QUEUED', closed_at = NOW(), updated_at = NOW()
+            WHERE basket_id = $1
+          `,
+          [basketId]
+        );
+
+        await client.query(
+          `
+            INSERT INTO rebid_queue (session_id, basket_id, reason, status)
+            VALUES ($1, $2, 'No bids received in active window', 'PENDING')
+            ON CONFLICT (basket_id)
+            DO UPDATE SET status = 'PENDING', queued_at = NOW()
+          `,
+          [sessionId, basketId]
+        );
+      }
+
+      const payload = {
+        sessionId,
+        basketId,
+        reason: "NO_BIDS"
+      };
+
+      await registerEvent(
+        "bid.basket.unsold",
+        "auction_basket",
+        basketId,
+        payload,
+        topics.publishedTopics.BID_BASKET_UNSOLD,
+        sessionId
       );
     }
 
-    const nextBasket = await findNextBasket(client, sessionId);
+    // Check if every basket in the session is SOLD or FINAL_UNSOLD
+    const remainingResult = await client.query(
+      `
+        SELECT COUNT(*)::int AS count
+        FROM auction_baskets
+        WHERE session_id = $1 AND status NOT IN ('SOLD', 'FINAL_UNSOLD')
+      `,
+      [sessionId]
+    );
 
-    if (nextBasket && nextBasket.basket_id !== basketId) {
-      events.push(
-        createEvent(
-          "NextBasketReady",
-          "auction_session",
-          sessionId,
-          {
-            sessionId,
-            basketId: nextBasket.basket_id,
-            basketNo: nextBasket.basket_no,
-            description: nextBasket.description,
-            status: nextBasket.status
-          },
-          topics.publishedTopics.NEXT_BASKET_READY
-        )
+    if (remainingResult.rows[0].count === 0) {
+      isSessionFinalized = true;
+
+      await client.query(
+        `
+          UPDATE auction_sessions
+          SET status = 'BIDDING_COMPLETED', updated_at = NOW()
+          WHERE session_id = $1
+        `,
+        [sessionId]
+      );
+
+      const countsRes = await client.query(
+        `
+          SELECT
+            COUNT(CASE WHEN status = 'SOLD' THEN 1 END)::int AS sold_count,
+            COUNT(CASE WHEN status = 'FINAL_UNSOLD' THEN 1 END)::int AS unsold_count
+          FROM auction_baskets
+          WHERE session_id = $1
+        `,
+        [sessionId]
+      );
+
+      const soldBasketCount = countsRes.rows[0].sold_count;
+      const unsoldBasketCount = countsRes.rows[0].unsold_count;
+      const totalBaskets = soldBasketCount + unsoldBasketCount;
+
+      const finalizedPayload = {
+        sessionId,
+        totalBaskets,
+        soldBasketCount,
+        unsoldBasketCount
+      };
+
+      await registerEvent(
+        "bid.all.baskets.finalized",
+        "auction_session",
+        sessionId,
+        finalizedPayload,
+        topics.publishedTopics.BID_ALL_BASKETS_FINALIZED,
+        sessionId
       );
     }
+  });
 
-    await insertEvents(client, events);
-    await client.query("COMMIT");
+  getIo().to(sessionId).emit("basketClosed", { sessionId, basketId });
+  if (isSessionFinalized) {
+    getIo().to(sessionId).emit("auctionFinalized", { sessionId });
+  }
+}
 
-    await publishEvents(events);
-    getIo().to(sessionId).emit("basketClosed", {
+async function openRebidRound(sessionId) {
+  await withTx(async (client, registerEvent) => {
+    const sessionRes = await client.query(
+      `SELECT rebid_round FROM auction_sessions WHERE session_id = $1 FOR UPDATE`,
+      [sessionId]
+    );
+
+    if (!sessionRes.rows.length) {
+      throw new Error("Session not found.");
+    }
+
+    const session = sessionRes.rows[0];
+
+    const pendingBaskets = await client.query(
+      `SELECT basket_id FROM rebid_queue WHERE session_id = $1 AND status = 'PENDING'`,
+      [sessionId]
+    );
+
+    if (pendingBaskets.rows.length === 0) {
+      throw new Error("No pending unsold baskets in the rebid queue.");
+    }
+
+    const basketIds = pendingBaskets.rows.map((r) => r.basket_id);
+    const newRoundNumber = session.rebid_round + 1;
+
+    // Increment rebid round count and put session status to LIVE
+    await client.query(
+      `UPDATE auction_sessions SET status = 'LIVE', rebid_round = $2, updated_at = NOW() WHERE session_id = $1`,
+      [sessionId, newRoundNumber]
+    );
+
+    // Update rebid queue
+    await client.query(
+      `UPDATE rebid_queue SET status = 'OPENED' WHERE session_id = $1 AND status = 'PENDING'`,
+      [sessionId]
+    );
+
+    // Update baskets to REBID_READY
+    await client.query(
+      `UPDATE auction_baskets SET status = 'REBID_READY', updated_at = NOW() WHERE session_id = $1 AND basket_id = ANY($2)`,
+      [sessionId, basketIds]
+    );
+
+    const payload = {
       sessionId,
-      basketId,
-      outcome
+      roundNumber: newRoundNumber,
+      basketIds
+    };
+
+    await registerEvent(
+      "bid.rebid.round.opened",
+      "auction_session",
+      sessionId,
+      payload,
+      topics.publishedTopics.BID_REBID_ROUND_OPENED,
+      sessionId
+    );
+  });
+
+  getIo().to(sessionId).emit("sessionProjectionUpdated", { sessionId, eventType: "rebidRoundOpened" });
+}
+
+async function handleBuyerRegistered(payload) {
+  const buyerId = payload.buyerId || payload.id;
+  const name = payload.name || payload.username || payload.displayName || "Unknown Buyer";
+  const email = payload.email || null;
+  const phone = payload.phone || null;
+  const address = payload.address || null;
+  const occurredAt = payload.occurredAt || new Date().toISOString();
+
+  await pool.query(
+    `
+      INSERT INTO buyers_projection (buyer_id, name, email, phone, address, occurred_at, raw_payload)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (buyer_id) DO UPDATE SET
+        name = EXCLUDED.name,
+        email = EXCLUDED.email,
+        phone = EXCLUDED.phone,
+        address = EXCLUDED.address,
+        occurred_at = EXCLUDED.occurred_at,
+        raw_payload = EXCLUDED.raw_payload
+    `,
+    [buyerId, name, email, phone, address, occurredAt, payload]
+  );
+  console.log(`Idempotently registered/updated buyer ${buyerId}`);
+}
+
+async function handleBasketCreated(payload) {
+  const basketId = payload.basketId || payload.id;
+  const species = payload.species || payload.description || payload.name || "Unknown Species";
+  const quantity = payload.quantity !== undefined ? Number(payload.quantity) : null;
+  const unit = payload.unit || null;
+  const quality = payload.quality || null;
+  const basePrice = payload.basePrice !== undefined ? Number(payload.basePrice) : null;
+  const boatName = payload.boatName || null;
+  const occurredAt = payload.occurredAt || new Date().toISOString();
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `
+        INSERT INTO catalog_baskets_projection (basket_id, species, quantity, unit, quality, base_price, boat_name, occurred_at, raw_payload)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (basket_id) DO UPDATE SET
+          species = EXCLUDED.species,
+          quantity = EXCLUDED.quantity,
+          unit = EXCLUDED.unit,
+          quality = EXCLUDED.quality,
+          base_price = EXCLUDED.base_price,
+          boat_name = EXCLUDED.boat_name,
+          occurred_at = EXCLUDED.occurred_at,
+          raw_payload = EXCLUDED.raw_payload
+      `,
+      [basketId, species, quantity, unit, quality, basePrice, boatName, occurredAt, payload]
+    );
+
+    const detailsReady = basePrice !== null;
+    await client.query(
+      `
+        UPDATE auction_baskets
+        SET
+          description = COALESCE(description, $2),
+          base_price = COALESCE(base_price, $3),
+          details_ready = details_ready OR $4,
+          updated_at = NOW()
+        WHERE basket_id = $1
+      `,
+      [basketId, species, basePrice, detailsReady]
+    );
+
+    await client.query("COMMIT");
+    console.log(`Idempotently stored basket details and enriched for basket ${basketId}`);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function handleCatalogPublished(payload) {
+  const sessionId = payload.sessionId || payload.id;
+  const title = payload.title || payload.name || `Auction Session ${sessionId}`;
+  const startTime = payload.startTime || new Date().toISOString();
+  const basketIds = Array.isArray(payload.basketIds) ? payload.basketIds : [];
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `
+        INSERT INTO auction_sessions (session_id, title, status, start_time, updated_at)
+        VALUES ($1, $2, 'READY', $3, NOW())
+        ON CONFLICT (session_id) DO UPDATE SET
+          title = EXCLUDED.title,
+          status = CASE
+            WHEN auction_sessions.status IN ('LIVE', 'BIDDING_COMPLETED') THEN auction_sessions.status
+            ELSE 'READY'
+          END,
+          start_time = COALESCE(auction_sessions.start_time, EXCLUDED.start_time),
+          updated_at = NOW()
+      `,
+      [sessionId, title, startTime]
+    );
+
+    for (let i = 0; i < basketIds.length; i++) {
+      const basketId = basketIds[i];
+      const basketNo = i + 1;
+
+      const basketProj = await client.query(
+        `SELECT species, base_price FROM catalog_baskets_projection WHERE basket_id = $1`,
+        [basketId]
+      );
+
+      let description = null;
+      let basePrice = null;
+      let detailsReady = false;
+
+      if (basketProj.rows.length) {
+        const row = basketProj.rows[0];
+        description = row.species;
+        basePrice = row.base_price !== null ? Number(row.base_price) : null;
+        detailsReady = basePrice !== null;
+      }
+
+      await client.query(
+        `
+          INSERT INTO auction_baskets (basket_id, session_id, basket_no, description, base_price, details_ready, status, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, 'LISTED', NOW())
+          ON CONFLICT (basket_id) DO UPDATE SET
+            session_id = EXCLUDED.session_id,
+            basket_no = EXCLUDED.basket_no,
+            description = COALESCE(auction_baskets.description, EXCLUDED.description),
+            base_price = COALESCE(auction_baskets.base_price, EXCLUDED.base_price),
+            details_ready = auction_baskets.details_ready OR EXCLUDED.details_ready,
+            updated_at = NOW()
+        `,
+        [basketId, sessionId, basketNo, description, basePrice, detailsReady]
+      );
+    }
+
+    await client.query("COMMIT");
+    console.log(`Idempotently handled catalog published for session ${sessionId}`);
+
+    getIo().emit("homeUpdated", {
+      sessionId,
+      eventType: "catalogPublished"
+    });
+
+    getIo().to(sessionId).emit("sessionProjectionUpdated", {
+      sessionId,
+      eventType: "catalogPublished"
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -547,168 +872,18 @@ async function closeBasket(sessionId, basketId) {
   }
 }
 
-async function hasFinalizedAllBaskets(client, sessionId) {
-  const result = await client.query(
-    `
-      SELECT COUNT(*)::int AS remaining
-      FROM auction_baskets b
-      LEFT JOIN sale_records s ON s.basket_id = b.basket_id
-      WHERE b.session_id = $1
-        AND (
-          b.status IN ('PENDING', 'OPEN')
-          OR (b.status = 'SOLD' AND COALESCE(s.payment_confirmed, FALSE) = FALSE)
-        )
-    `,
-    [sessionId]
-  );
-
-  return result.rows[0].remaining === 0;
-}
-
-async function findNextBasket(client, sessionId) {
-  const result = await client.query(
-    `
-      SELECT basket_id, basket_no, description, status
-      FROM auction_baskets
-      WHERE session_id = $1 AND status IN ('PENDING', 'UNSOLD')
-      ORDER BY
-        CASE WHEN status = 'PENDING' THEN 0 ELSE 1 END,
-        basket_no NULLS LAST,
-        created_at
-      LIMIT 1
-    `,
-    [sessionId]
-  );
-
-  return result.rows[0] || null;
-}
-
-async function confirmPayment(sessionId, basketId) {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const saleResult = await client.query(
-      `
-        SELECT id, basket_id, winner_id, winning_bid_amount, payment_confirmed
-        FROM sale_records
-        WHERE session_id = $1 AND basket_id = $2
-        FOR UPDATE
-      `,
-      [sessionId, basketId]
-    );
-
-    if (!saleResult.rows.length) {
-      throw new Error("Sale record not found for payment confirmation.");
-    }
-
-    const sale = saleResult.rows[0];
-
-    if (sale.payment_confirmed) {
-      throw new Error("Payment already confirmed.");
-    }
-
-    await client.query(
-      `
-        UPDATE sale_records
-        SET payment_confirmed = TRUE
-        WHERE id = $1
-      `,
-      [sale.id]
-    );
-
-    const paymentPayload = {
-      sessionId,
-      basketId,
-      winnerId: sale.winner_id,
-      amount: Number(sale.winning_bid_amount)
-    };
-
-    const events = [
-      createEvent(
-        "PaymentConfirmed",
-        "sale_record",
-        String(sale.id),
-        paymentPayload,
-        topics.publishedTopics.PAYMENT_CONFIRMED
-      ),
-      createEvent(
-        "BasketSaleCompleted",
-        "auction_basket",
-        basketId,
-        paymentPayload,
-        topics.publishedTopics.BASKET_SALE_COMPLETED
-      )
-    ];
-
-    const nextBasket = await findNextBasket(client, sessionId);
-
-    if (nextBasket) {
-      events.push(
-        createEvent(
-          "NextBasketReady",
-          "auction_session",
-          sessionId,
-          {
-            sessionId,
-            basketId: nextBasket.basket_id,
-            basketNo: nextBasket.basket_no,
-            description: nextBasket.description,
-            status: nextBasket.status
-          },
-          topics.publishedTopics.NEXT_BASKET_READY
-        )
-      );
-    }
-
-    const finalized = await hasFinalizedAllBaskets(client, sessionId);
-
-    if (finalized) {
-      await client.query(
-        `
-          UPDATE auction_sessions
-          SET status = 'FINALIZED', updated_at = NOW()
-          WHERE session_id = $1
-        `,
-        [sessionId]
-      );
-
-      events.push(
-        createEvent(
-          "AllBasketsFinalized",
-          "auction_session",
-          sessionId,
-          { sessionId },
-          topics.publishedTopics.ALL_BASKETS_FINALIZED
-        )
-      );
-    }
-
-    await insertEvents(client, events);
-    await client.query("COMMIT");
-
-    await publishEvents(events);
-    getIo().to(sessionId).emit("paymentConfirmed", paymentPayload);
-
-    if (finalized) {
-      getIo().to(sessionId).emit("auctionFinalized", { sessionId });
-    }
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 module.exports = {
+  flushUnpublishedOutbox,
   getHomeData,
   getHomeSnapshot,
   getAuctionDashboard,
   getAuctionSnapshot,
+  startAuction,
   openBasket,
   placeBid,
   closeBasket,
-  confirmPayment
+  openRebidRound,
+  handleBuyerRegistered,
+  handleBasketCreated,
+  handleCatalogPublished
 };

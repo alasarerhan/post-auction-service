@@ -7,6 +7,7 @@ const auctionRoutes = require("./routes/auction.routes");
 const consumer = require("./kafka/consumer");
 const producer = require("./kafka/producer");
 const { initializeSocket } = require("./sockets/socket");
+const biddingService = require("./domain/bidding.service");
 
 dotenv.config();
 
@@ -48,6 +49,22 @@ async function start() {
     } catch (error) {
       console.error("Kafka consumer could not start:", error.message);
     }
+
+    // Flush outbox on startup
+    try {
+      await biddingService.flushUnpublishedOutbox();
+    } catch (error) {
+      console.error("Outbox flush on startup failed:", error.message);
+    }
+
+    // Periodically retry flushing outbox every 10 seconds
+    setInterval(async () => {
+      try {
+        await biddingService.flushUnpublishedOutbox();
+      } catch (error) {
+        console.error("Periodic outbox flush failed:", error.message);
+      }
+    }, 10000);
   });
 }
 

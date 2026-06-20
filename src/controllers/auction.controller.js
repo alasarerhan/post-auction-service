@@ -52,6 +52,15 @@ async function getAuctionSnapshot(req, res, next) {
   }
 }
 
+async function startAuction(req, res) {
+  try {
+    await biddingService.startAuction(req.params.sessionId);
+    res.redirect(`/auction/${req.params.sessionId}`);
+  } catch (error) {
+    res.status(400).send(error.message);
+  }
+}
+
 async function openBasket(req, res) {
   try {
     await biddingService.openBasket(req.params.sessionId, req.params.basketId);
@@ -82,9 +91,9 @@ async function closeBasket(req, res) {
   }
 }
 
-async function confirmPayment(req, res) {
+async function openRebidRound(req, res) {
   try {
-    await biddingService.confirmPayment(req.params.sessionId, req.params.basketId);
+    await biddingService.openRebidRound(req.params.sessionId);
     res.redirect(`/auction/${req.params.sessionId}`);
   } catch (error) {
     res.status(400).send(error.message);
@@ -96,8 +105,9 @@ module.exports = {
   renderAuctionDashboard,
   getHomeSnapshot,
   getAuctionSnapshot,
+  startAuction,
   openBasket,
   placeBid,
   closeBasket,
-  confirmPayment
+  openRebidRound
 };

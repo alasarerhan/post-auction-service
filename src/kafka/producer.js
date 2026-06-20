@@ -20,31 +20,35 @@ function parseMultiline(value) {
 }
 
 function buildKafkaConfig() {
-  const sslEnabled = parseBoolean(process.env.KAFKA_SSL);
+  const sslEnabled = process.env.KAFKA_SSL ? parseBoolean(process.env.KAFKA_SSL) : true;
   const username = process.env.KAFKA_SASL_USERNAME;
   const password = process.env.KAFKA_SASL_PASSWORD;
   const ca = parseMultiline(process.env.KAFKA_SSL_CA);
   const cert = parseMultiline(process.env.KAFKA_SSL_CERT);
   const key = parseMultiline(process.env.KAFKA_SSL_KEY);
 
-  const ssl =
-    sslEnabled
-      ? {
-          rejectUnauthorized: !parseBoolean(process.env.KAFKA_SSL_REJECT_UNAUTHORIZED_FALSE),
-          ca: ca ? [ca] : undefined,
-          cert,
-          key
-        }
-      : undefined;
+  let ssl = undefined;
+  if (sslEnabled) {
+    if (ca || cert || key) {
+      ssl = {
+        rejectUnauthorized: !parseBoolean(process.env.KAFKA_SSL_REJECT_UNAUTHORIZED_FALSE),
+        ca: ca ? [ca] : undefined,
+        cert,
+        key
+      };
+    } else {
+      ssl = true;
+    }
+  }
 
   return {
-    clientId: process.env.KAFKA_CLIENT_ID || "bid-service",
+    clientId: process.env.KAFKA_CLIENT_ID || "auction-bidding-service",
     brokers,
     ssl,
     sasl:
       username && password
         ? {
-            mechanism: process.env.KAFKA_SASL_MECHANISM || "plain",
+            mechanism: "plain",
             username,
             password
           }
@@ -59,7 +63,6 @@ function getProducer() {
 
   if (!producer) {
     const kafka = new Kafka(buildKafkaConfig());
-
     producer = kafka.producer();
   }
 
@@ -77,7 +80,7 @@ async function connect() {
   isConnected = true;
 }
 
-async function publish(topic, payload) {
+async function publish(topic, payload, key) {
   const instance = getProducer();
 
   if (!instance) {
@@ -93,7 +96,12 @@ async function publish(topic, payload) {
     topic,
     messages: [
       {
-        value: JSON.stringify(payload)
+        key: key ? String(key) : undefined,
+        value: JSON.stringify(payload),
+        headers: {
+          "content-type": "application/json",
+          "eventType": topic
+        }
       }
     ]
   });

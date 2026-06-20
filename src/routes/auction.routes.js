@@ -8,9 +8,10 @@ router.get("/api/home/snapshot", controller.getHomeSnapshot);
 router.get("/auction/:sessionId", controller.renderAuctionDashboard);
 router.get("/api/auction/:sessionId/snapshot", controller.getAuctionSnapshot);
 
+router.post("/auction/:sessionId/start", controller.startAuction);
 router.post("/auction/:sessionId/baskets/:basketId/open", controller.openBasket);
 router.post("/auction/:sessionId/baskets/:basketId/bid", controller.placeBid);
 router.post("/auction/:sessionId/baskets/:basketId/close", controller.closeBasket);
-router.post("/auction/:sessionId/baskets/:basketId/payment/confirm", controller.confirmPayment);
+router.post("/auction/:sessionId/rebid/open", controller.openRebidRound);
 
 module.exports = router;
