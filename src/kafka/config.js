@@ -7,12 +7,12 @@ function hasKafkaBrokers() {
 }
 
 function getKafkaGroupId() {
-  return process.env.KAFKA_GROUP_ID || "auction-service";
+  return process.env.KAFKA_GROUP_ID;
 }
 
 function buildKafkaConfig() {
   return {
-    clientId: process.env.KAFKA_CLIENT_ID || "auction-service",
+    clientId: process.env.KAFKA_CLIENT_ID,
     brokers: [process.env.KAFKA_BROKERS],
     ssl: true,
     sasl: {
