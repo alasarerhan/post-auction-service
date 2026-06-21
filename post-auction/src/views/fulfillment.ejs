@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Post-Auction Fulfillment</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 2rem;
+        background: #f6f8fb;
+        color: #1d2939;
+      }
+      .card {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 1rem;
+      }
+      a {
+        color: #0057b8;
+        text-decoration: none;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th, td {
+        padding: 0.75rem;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+        vertical-align: top;
+      }
+      form {
+        margin: 0.4rem 0;
+      }
+      input, button {
+        box-sizing: border-box;
+        padding: 0.55rem 0.7rem;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+      }
+      input {
+        width: 100%;
+        min-width: 0;
+      }
+      button {
+        cursor: pointer;
+        background: #0057b8;
+        color: #fff;
+        border: none;
+        white-space: nowrap;
+      }
+      .actions-cell {
+        min-width: 360px;
+      }
+      .action-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 145px;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      .action-form.two-column {
+        grid-template-columns: minmax(0, 1fr) 145px;
+      }
+      .action-form.single-action {
+        grid-template-columns: 145px;
+        justify-content: end;
+      }
+      .action-form button {
+        width: 100%;
+      }
+      .session-action-form {
+        display: flex;
+        justify-content: flex-start;
+        gap: 0.5rem;
+      }
+      .session-action-form button {
+        width: auto;
+        min-width: 132px;
+        min-height: 40px;
+        padding: 0.55rem 0.85rem;
+      }
+      .muted {
+        color: #667085;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 999px;
+        background: #e0f2fe;
+        color: #075985;
+        font-size: 0.85rem;
+      }
+      .danger {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+    </style>
+  </head>
+  <body data-page="fulfillment" data-snapshot-token="<%= snapshotToken %>">
+    <div id="liveBanner" class="card" style="display: none;">Live fulfillment update received. Refreshing view...</div>
+
+    <div class="card">
+      <p><a href="/">← Auction home</a></p>
+      <h2>Post-Auction & Fulfillment</h2>
+      <p class="muted">Sales, pickup scheduling, delivery check, captain payout, and auction closing.</p>
+      <% if (error) { %>
+        <p class="badge danger"><%= error %></p>
+      <% } %>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <h3>Sales</h3>
+        <% if (!dashboard.sales.length) { %>
+          <p>No sales recorded yet. Waiting for <code>bid.basket.sold</code> events.</p>
+        <% } else { %>
+          <table>
+            <thead>
+              <tr>
+                <th>Basket</th>
+                <th>Buyer</th>
+                <th>Sale</th>
+                <th>Fulfillment</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% dashboard.sales.forEach((sale) => { %>
+                <tr>
+                  <td>
+                    <strong><%= sale.basket_id %></strong><br />
+                    <span class="muted"><%= sale.species || "Unknown species" %> <%= sale.quantity || "" %> <%= sale.unit || "" %></span><br />
+                    <span class="muted">Boat: <%= sale.boat_name || "Unknown" %></span>
+                  </td>
+                  <td>
+                    <%= sale.buyer_name || sale.buyer_id %><br />
+                    <span class="muted"><%= sale.buyer_address || "No address" %></span>
+                  </td>
+                  <td>
+                    <span class="badge"><%= sale.sale_status %></span><br />
+                    <strong><%= Number(sale.sale_price).toFixed(2) %></strong>
+                  </td>
+                  <td>
+                    <span class="badge"><%= sale.fulfillment_status %></span><br />
+                    <% if (sale.pickup_location) { %>
+                      <span class="muted">Pickup: <%= sale.pickup_location %> / <%= sale.pickup_time_window %></span><br />
+                    <% } %>
+                    <% if (sale.delivery_reason) { %>
+                      <span class="muted">Delivery: <%= sale.delivery_available ? "Available" : "Unavailable" %> (<%= sale.delivery_reason %>)</span>
+                    <% } %>
+                  </td>
+                  <td class="actions-cell">
+                    <form class="action-form" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/pickup">
+                      <input name="pickupLocation" placeholder="Pickup location" value="<%= sale.pickup_location || 'Fish Auction Pickup Point' %>" />
+                      <input name="pickupTimeWindow" placeholder="Time window" value="<%= sale.pickup_time_window || 'Today 18:00-20:00' %>" />
+                      <button type="submit">Schedule pickup</button>
+                    </form>
+                    <form class="action-form two-column" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/delivery/check">
+                      <input name="address" placeholder="Delivery address" value="<%= sale.delivery_address || sale.buyer_address || '' %>" />
+                      <button type="submit">Check delivery</button>
+                    </form>
+                    <form class="action-form single-action" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/complete">
+                      <button type="submit">Complete basket</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        <% } %>
+      </div>
+
+      <div>
+        <div class="card">
+          <h3>Session actions</h3>
+          <% const sessionIds = [...new Set(dashboard.sales.map((sale) => sale.session_id))]; %>
+          <% if (!sessionIds.length) { %>
+            <p class="muted">No session with sales yet.</p>
+          <% } %>
+          <% sessionIds.forEach((sessionId) => { %>
+            <div class="card">
+              <strong><%= sessionId %></strong>
+              <form class="session-action-form" method="post" action="/fulfillment/sessions/<%= sessionId %>/captain-payments/calculate">
+                <button type="submit">Calculate captain payouts</button>
+              </form>
+              <form class="session-action-form" method="post" action="/fulfillment/sessions/<%= sessionId %>/close">
+                <button type="submit">Close auction</button>
+              </form>
+            </div>
+          <% }) %>
+        </div>
+
+        <div class="card">
+          <h3>Captain payouts</h3>
+          <% if (!dashboard.captainPayments.length) { %>
+            <p class="muted">No captain payout calculated yet.</p>
+          <% } else { %>
+            <table>
+              <thead>
+                <tr>
+                  <th>Captain / Boat</th>
+                  <th>Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% dashboard.captainPayments.forEach((payment) => { %>
+                  <tr>
+                    <td>
+                      <strong><%= payment.captain_name || payment.member_id || 'Unknown Captain' %></strong><br />
+                      <span class="muted"><%= payment.boat_name %></span>
+                    </td>
+                    <td>
+                      <strong><%= Number(payment.net_amount).toFixed(2) %></strong><br />
+                      <span class="muted">Gross <%= Number(payment.gross_amount).toFixed(2) %>, commission <%= Number(payment.commission_amount).toFixed(2) %></span>
+                    </td>
+                  </tr>
+                <% }) %>
+              </tbody>
+            </table>
+          <% } %>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/main.js"></script>
+  </body>
+</html>
