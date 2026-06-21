@@ -65,6 +65,18 @@
     return;
   }
 
+  if (page === "fulfillment") {
+    socket.on("fulfillmentUpdated", function () {
+      refreshSoon("Fulfillment state changed. Refreshing view...");
+    });
+
+    window.setInterval(function () {
+      pollSnapshot("/api/fulfillment/snapshot");
+    }, 3000);
+
+    return;
+  }
+
   if (!sessionId) {
     return;
   }
@@ -87,10 +99,6 @@
 
   socket.on("basketClosed", function () {
     refreshSoon("Basket closed. Refreshing view...");
-  });
-
-  socket.on("paymentConfirmed", function () {
-    refreshSoon("Payment confirmed. Refreshing view...");
   });
 
   socket.on("auctionFinalized", function () {

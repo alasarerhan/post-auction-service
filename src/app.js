@@ -4,6 +4,7 @@ const express = require("express");
 const dotenv = require("dotenv");
 
 const auctionRoutes = require("./routes/auction.routes");
+const fulfillmentRoutes = require("./routes/fulfillment.routes");
 const consumer = require("./kafka/consumer");
 const producer = require("./kafka/producer");
 const { initializeSocket } = require("./sockets/socket");
@@ -24,6 +25,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/", auctionRoutes);
+app.use("/", fulfillmentRoutes);
 
 app.use((err, req, res, next) => {
   console.error("Unhandled application error:", err);

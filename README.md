@@ -2,15 +2,18 @@
 
 This repository implements **Service 3: Auction & Bidding Service** for the Online Fish Auction System. It is an event-driven, autonomous microservice built with Node.js and Express, utilizing a private PostgreSQL database for storing local data projections and transaction states, and communicating with other services using Kafka.
 
+The same repository also ships a **Service 4: Post-Auction & Fulfillment** module that shares the Express app, Postgres database, Kafka client, and UI conventions. See the bottom of this file under "Post-Auction & Fulfillment Module" for its scope, events, endpoints, and tests.
+
 ---
 
 ## 1. Overview
 
 The Auction & Bidding Service is a core component of the Online Fish Auction System's event-driven microservice architecture. It manages the active phase of fish auctions by:
-1. Building local data projections from upstream Kafka events (`user.buyer.registered`, `catalog.basket.created`, and `catalog.published`) to remain self-contained.
+1. Building local data projections from upstream Kafka events (`user.buyer.registered`, `user.member.registered`, `catalog.basket.created`, and `catalog.published`) to remain self-contained.
 2. Managing session and basket state transitions in real time.
 3. Conducting active bidding phases (accepting bids, closing baskets, handling rebid queues).
 4. Publishing domain events to downstream services via Kafka (`auction.session.started`, `auction.basket.opened`, `bid.placed`, `bid.basket.sold`, `bid.basket.unsold`, `bid.rebid.round.opened`, `bid.all.baskets.finalized`).
+5. The Post-Auction & Fulfillment module additionally consumes `bid.basket.sold` and `bid.all.baskets.finalized` and publishes `fulfillment.*` events for Notification.
 
 By keeping its own private database schema, this service remains decoupled from the databases of other microservices. Inter-service communication is achieved **solely via Kafka**, while Socket.IO is utilized strictly for live UI updates on the operator dashboard.
 
@@ -268,9 +271,12 @@ The service implements an event-driven flow, subscribing to catalog and user top
 
 | Topic | Producer Service | Purpose | Main Fields | Local Table Updated |
 | :--- | :--- | :--- | :--- | :--- |
-| `user.buyer.registered` | Service 1: User | Registers buyer profiles locally to allow validation of bid placements. | `id`/`buyerId`, `name`, `email`, `phone`, `occurredAt` | `buyers_projection` |
-| `catalog.basket.created` | Service 2: Catalog | Receives basket profiles, ensuring baseline weights and descriptions are stored locally. | `id`/`basketId`, `species`, `quantity`, `basePrice`, `occurredAt` | `catalog_baskets_projection` |
+| `user.buyer.registered` | Service 1: User | Registers buyer profiles locally to allow validation of bid placements and Post-Auction delivery checks. | `id`/`buyerId`, `name`, `email`, `phone`, `address`, `occurredAt` | `buyers_projection` |
+| `user.member.registered` | Service 1: User | Registers captain/member projection used by Post-Auction for captain payout calculation. | `id`/`memberId`, `memberName`, `boatName`, `email`, `phone`, `occurredAt` | `members_projection` |
+| `catalog.basket.created` | Service 2: Catalog | Receives basket profiles, ensuring baseline weights, descriptions, and member/boat mapping are stored locally. | `id`/`basketId`, `species`, `quantity`, `basePrice`, `memberId`, `boatName`, `occurredAt` | `catalog_baskets_projection` |
 | `catalog.published` | Service 2: Catalog | Signals that a catalog session has been finalized and published. Creates the session locally. | `id`/`sessionId`, `title`, `startTime`, `basketIds` (array) | `auction_sessions`, `auction_baskets` |
+| `bid.basket.sold` | Service 3: Auction (internal) | Post-Auction consumes this to record a sale and start fulfillment. | `sessionId`, `basketId`, `buyerId`, `winningBidId`, `salePrice`, `occurredAt` | `fulfillment_sales` |
+| `bid.all.baskets.finalized` | Service 3: Auction (internal) | Post-Auction consumes this to trigger auction close and captain payment summary. | `sessionId`, `totalBaskets`, `soldBasketCount`, `unsoldBasketCount`, `occurredAt` | `fulfillment_sales` (summary) |
 
 ### B. Published Events
 
@@ -283,6 +289,12 @@ The service implements an event-driven flow, subscribing to catalog and user top
 | `bid.basket.unsold` | Service 4, UI | Operator clicks "Close Basket" when the basket has received no bids. | `sessionId`, `basketId`, `reason` ("NO_BIDS") | Transitions basket to `REBID_QUEUED` (1st round) or `FINAL_UNSOLD` (2nd round). |
 | `bid.rebid.round.opened` | Bidders, UI | Operator clicks "Open Rebid Round" for pending unsold baskets. | `sessionId`, `roundNumber`, `basketIds` (array) | Increments rebid round count. Baskets move to `REBID_READY`. |
 | `bid.all.baskets.finalized` | Service 4, UI | All baskets in the session have been finalized as `SOLD` or `FINAL_UNSOLD`. | `sessionId`, `totalBaskets`, `soldBasketCount`, `unsoldBasketCount` | Transitions session to `BIDDING_COMPLETED`. |
+| `fulfillment.sale.recorded` | Service 5: Notification, UI | Post-Auction records a sale from `bid.basket.sold`. | `sessionId`, `basketId`, `buyerId`, `winningBidId`, `salePrice` | Local sale row created. |
+| `fulfillment.pickup.scheduled` | Service 5: Notification, UI | Operator schedules pickup from the dashboard. | `sessionId`, `basketId`, `buyerId`, `pickupLocation`, `pickupTimeWindow` | Local sale row updated. |
+| `fulfillment.delivery.checked` | Service 5: Notification, UI | Operator requests nearby delivery check from the dashboard. | `sessionId`, `basketId`, `buyerId`, `address`, `deliveryAvailable`, `reason` | Local sale row updated. |
+| `fulfillment.basket.completed` | Service 5: Notification, UI | Operator completes a basket from the dashboard. | `sessionId`, `basketId`, `buyerId`, `fulfillmentStatus`, `deliveryAvailable` | Local sale row closed. |
+| `fulfillment.captain.payment.calculated` | Service 5: Notification, UI | Operator triggers captain payment calculation per session. | `sessionId`, `memberId`, `captainName`, `boatName`, `grossAmount`, `commissionAmount`, `netAmount`, `basketIds` | Local `captain_payments` row created. |
+| `fulfillment.auction.closed` | Service 5: Notification, UI | Operator closes the auction for a session. | `sessionId`, `totalSales`, `totalRevenue`, `totalCaptainPayments`, `closedAt` | Local summary recorded. |
 
 ---
 
@@ -624,3 +636,154 @@ Team members:
 ## 18. Report Support
 
 This service demonstrates event-driven microservice collaboration by consuming upstream domain events to build private local projections and publishing bidding-domain events through a reliable transactional outbox. The design keeps the service autonomous, avoids shared databases, and separates bidding responsibilities from post-auction payment and fulfillment.
+
+---
+
+## Post-Auction & Fulfillment Module
+
+This repository now also contains a Post-Auction & Fulfillment module used for the course integration demo. The module follows the responsibility set from `projects.jpeg`:
+
+- recording sales
+- managing pickup information
+- checking whether delivery is possible for nearby addresses
+- calculating the amount to be paid to each captain
+- closing auction
+
+### Produced events
+
+The module publishes these domain events through the shared outbox table and Kafka producer:
+
+1. `fulfillment.sale.recorded`
+2. `fulfillment.pickup.scheduled`
+3. `fulfillment.delivery.checked`
+4. `fulfillment.basket.completed`
+5. `fulfillment.captain.payment.calculated`
+6. `fulfillment.auction.closed`
+
+Payload details are documented in [`POST_AUCTION_PRODUCED_EVENTS.md`](./POST_AUCTION_PRODUCED_EVENTS.md). Full consume/produce decisions are documented in [`POST_AUCTION_EVENTS.md`](./POST_AUCTION_EVENTS.md).
+
+### Consumed events
+
+The module consumes/projections these upstream events:
+
+- `bid.basket.sold` — creates a local sale record and emits `fulfillment.sale.recorded`
+- `bid.all.baskets.finalized` — marks the auction as ready for post-auction closing work
+- `user.buyer.registered` — stores buyer contact/address projection for delivery checks
+- `user.member.registered` — stores captain/member projection for payout calculation
+- `catalog.basket.created` — stores basket/boat/member projection for captain payout calculation
+
+### API endpoints
+
+Open the UI at:
+
+```text
+http://localhost:3000/fulfillment
+```
+
+Command endpoints used by the UI:
+
+```text
+GET  /fulfillment
+GET  /api/fulfillment/snapshot
+POST /fulfillment/sales/:basketId/pickup
+POST /fulfillment/sales/:basketId/delivery/check
+POST /fulfillment/sales/:basketId/complete
+POST /fulfillment/sessions/:sessionId/captain-payments/calculate
+POST /fulfillment/sessions/:sessionId/close
+```
+
+### Local setup
+
+Start PostgreSQL with Docker:
+
+```bash
+docker run --name bidding-postgres \
+  -e POSTGRES_DB=bidding_service \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+If the container already exists:
+
+```bash
+docker start bidding-postgres
+```
+
+Install dependencies and initialize the schema:
+
+```bash
+npm install
+npm run db:init
+```
+
+Start the app:
+
+```bash
+npm run dev
+```
+
+### Kafka configuration
+
+Create a local `.env` with these values:
+
+```env
+PORT=3000
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=bidding_service
+PGUSER=postgres
+PGPASSWORD=postgres
+KAFKA_BROKERS=<bootstrap-server>
+KAFKA_SASL_USERNAME=<api-key>
+KAFKA_SASL_PASSWORD=<api-secret>
+KAFKA_GROUP_ID=bidding-service-local
+KAFKA_CLIENT_ID=bidding-service
+```
+
+Local key files such as `api-key-*.txt` are ignored by git.
+
+### Required Kafka topics
+
+The Kafka cluster must contain these fulfillment topics before live publishing succeeds:
+
+```text
+fulfillment.sale.recorded
+fulfillment.pickup.scheduled
+fulfillment.delivery.checked
+fulfillment.basket.completed
+fulfillment.captain.payment.calculated
+fulfillment.auction.closed
+```
+
+During verification, the configured API key could list topics and consume existing topics, but topic creation for the missing fulfillment topics returned `TOPIC_AUTHORIZATION_FAILED`. Ask the Kafka/queue owner to create the missing topics if they are not already present.
+
+### Tests
+
+Run all tests:
+
+```bash
+npm test
+```
+
+The test suite covers:
+
+- unit business logic for delivery checks and fulfillment event creation
+- integration flow from `bid.basket.sold` handling through pickup, delivery, completion, captain payout, and auction close
+- outbox/event-store verification for all produced fulfillment events
+- frontend render/API integration for `/fulfillment`
+
+### 10-second verification
+
+With Docker/Postgres running:
+
+```bash
+npm test
+curl -I http://localhost:3000/fulfillment
+```
+
+Expected result:
+
+- `npm test` reports all tests passing
+- `curl` returns `HTTP/1.1 200 OK`

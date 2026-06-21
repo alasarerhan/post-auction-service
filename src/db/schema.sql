@@ -1,4 +1,8 @@
 DROP TABLE IF EXISTS event_store CASCADE;
+DROP TABLE IF EXISTS captain_payments CASCADE;
+DROP TABLE IF EXISTS fulfillment_sales CASCADE;
+DROP TABLE IF EXISTS processed_events CASCADE;
+DROP TABLE IF EXISTS members_projection CASCADE;
 DROP TABLE IF EXISTS bids CASCADE;
 DROP TABLE IF EXISTS rebid_queue CASCADE;
 DROP TABLE IF EXISTS auction_baskets CASCADE;
@@ -26,9 +30,27 @@ CREATE TABLE catalog_baskets_projection (
   quality VARCHAR(50),
   base_price NUMERIC(12, 2),
   boat_name VARCHAR(255),
+  member_id VARCHAR(100),
   occurred_at TIMESTAMPTZ,
   raw_payload JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE members_projection (
+  member_id VARCHAR(100) PRIMARY KEY,
+  member_name VARCHAR(255) NOT NULL,
+  boat_name VARCHAR(255) NOT NULL,
+  email VARCHAR(255),
+  phone VARCHAR(50),
+  occurred_at TIMESTAMPTZ,
+  raw_payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE processed_events (
+  event_id UUID PRIMARY KEY,
+  topic VARCHAR(255) NOT NULL,
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE event_store (
@@ -94,6 +116,48 @@ CREATE TABLE rebid_queue (
   FOREIGN KEY (session_id, basket_id) REFERENCES auction_baskets (session_id, basket_id) ON DELETE CASCADE
 );
 
+CREATE TABLE fulfillment_sales (
+  sale_id UUID PRIMARY KEY,
+  session_id VARCHAR(100) NOT NULL,
+  basket_id VARCHAR(100) NOT NULL UNIQUE,
+  buyer_id VARCHAR(100) NOT NULL,
+  winning_bid_id VARCHAR(100) NOT NULL,
+  sale_price NUMERIC(12, 2) NOT NULL,
+  boat_name VARCHAR(255),
+  member_id VARCHAR(100),
+  sale_status VARCHAR(50) NOT NULL DEFAULT 'RECORDED',
+  pickup_location TEXT,
+  pickup_time_window TEXT,
+  delivery_address TEXT,
+  delivery_available BOOLEAN,
+  delivery_reason VARCHAR(100),
+  fulfillment_status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  pickup_scheduled_at TIMESTAMPTZ,
+  delivery_checked_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  raw_payload JSONB
+);
+
+CREATE TABLE captain_payments (
+  captain_payment_id UUID PRIMARY KEY,
+  session_id VARCHAR(100) NOT NULL,
+  member_id VARCHAR(100),
+  captain_name VARCHAR(255),
+  boat_name VARCHAR(255) NOT NULL,
+  gross_amount NUMERIC(12, 2) NOT NULL,
+  commission_amount NUMERIC(12, 2) NOT NULL,
+  net_amount NUMERIC(12, 2) NOT NULL,
+  basket_ids JSONB NOT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'CALCULATED',
+  calculated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (session_id, boat_name)
+);
+
 CREATE INDEX idx_event_store_aggregate ON event_store (aggregate_type, aggregate_id);
 CREATE INDEX idx_bids_basket_id ON bids (basket_id);
 CREATE INDEX idx_rebid_queue_session_status ON rebid_queue (session_id, status);
+CREATE INDEX idx_fulfillment_sales_session ON fulfillment_sales (session_id);
+CREATE INDEX idx_fulfillment_sales_status ON fulfillment_sales (fulfillment_status);
+CREATE INDEX idx_captain_payments_session ON captain_payments (session_id);

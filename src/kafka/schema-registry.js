@@ -7,7 +7,13 @@ const schemaRegistry = {
   [topics.publishedTopics.BID_BASKET_SOLD]: require("../../schema/bid.basket.sold.schema.json"),
   [topics.publishedTopics.BID_BASKET_UNSOLD]: require("../../schema/bid.basket.unsold.schema.json"),
   [topics.publishedTopics.BID_REBID_ROUND_OPENED]: require("../../schema/bid.rebid.round.opened.schema.json"),
-  [topics.publishedTopics.BID_ALL_BASKETS_FINALIZED]: require("../../schema/bid.all.baskets.finalized.schema.json")
+  [topics.publishedTopics.BID_ALL_BASKETS_FINALIZED]: require("../../schema/bid.all.baskets.finalized.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_SALE_RECORDED]: require("../../schema/fulfillment.sale.recorded.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_PICKUP_SCHEDULED]: require("../../schema/fulfillment.pickup.scheduled.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_DELIVERY_CHECKED]: require("../../schema/fulfillment.delivery.checked.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_BASKET_COMPLETED]: require("../../schema/fulfillment.basket.completed.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_CAPTAIN_PAYMENT_CALCULATED]: require("../../schema/fulfillment.captain.payment.calculated.schema.json"),
+  [topics.publishedTopics.FULFILLMENT_AUCTION_CLOSED]: require("../../schema/fulfillment.auction.closed.schema.json")
 };
 
 const uuidPattern =

@@ -1,6 +1,7 @@
 const { Kafka } = require("kafkajs");
 
 const biddingService = require("../domain/bidding.service");
+const fulfillmentService = require("../domain/fulfillment.service");
 const { buildKafkaConfig, getKafkaGroupId, hasKafkaBrokers } = require("./config");
 const topics = require("./topics");
 
@@ -50,12 +51,23 @@ async function start() {
         switch (topic) {
           case topics.consumedTopics.USER_BUYER_REGISTERED:
             await biddingService.handleBuyerRegistered(payload);
+            await fulfillmentService.handleBuyerRegistered(payload);
+            break;
+          case topics.consumedTopics.USER_MEMBER_REGISTERED:
+            await fulfillmentService.handleMemberRegistered(payload);
             break;
           case topics.consumedTopics.CATALOG_BASKET_CREATED:
             await biddingService.handleBasketCreated(payload);
+            await fulfillmentService.handleBasketCreated(payload);
             break;
           case topics.consumedTopics.CATALOG_PUBLISHED:
             await biddingService.handleCatalogPublished(payload);
+            break;
+          case topics.consumedTopics.BID_BASKET_SOLD:
+            await fulfillmentService.handleBasketSold(payload);
+            break;
+          case topics.consumedTopics.BID_ALL_BASKETS_FINALIZED:
+            await fulfillmentService.handleAllBasketsFinalized(payload);
             break;
           default:
             console.log(`Unhandled topic ${topic}`);
