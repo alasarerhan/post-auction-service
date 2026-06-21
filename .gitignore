@@ -149,3 +149,9 @@ dist
 
 # End of https://www.toptal.com/developers/gitignore/api/node
 .wrongstack/
+
+# Local-only artifacts
+.tmp/
+projects.jpeg
+post-auction/scripts/
+post-auction/DOCKER_START.md

@@ -1,3 +1,10 @@
+// Post-Auction & Fulfillment Service — Kafka topic registry.
+//
+// This service only consumes/produces its own fulfillment domain events.
+// It does NOT publish Auction & Bidding events; those belong to the
+// Auction service. Post-Auction consumes a small set of upstream events
+// to keep local projections in sync.
+
 module.exports = {
   consumedTopics: {
     USER_BUYER_REGISTERED: "user.buyer.registered",
@@ -8,13 +15,6 @@ module.exports = {
     BID_ALL_BASKETS_FINALIZED: "bid.all.baskets.finalized"
   },
   publishedTopics: {
-    AUCTION_SESSION_STARTED: "auction.session.started",
-    AUCTION_BASKET_OPENED: "auction.basket.opened",
-    BID_PLACED: "bid.placed",
-    BID_BASKET_SOLD: "bid.basket.sold",
-    BID_BASKET_UNSOLD: "bid.basket.unsold",
-    BID_REBID_ROUND_OPENED: "bid.rebid.round.opened",
-    BID_ALL_BASKETS_FINALIZED: "bid.all.baskets.finalized",
     FULFILLMENT_SALE_RECORDED: "fulfillment.sale.recorded",
     FULFILLMENT_PICKUP_SCHEDULED: "fulfillment.pickup.scheduled",
     FULFILLMENT_DELIVERY_CHECKED: "fulfillment.delivery.checked",
