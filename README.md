@@ -20,7 +20,7 @@ The service keeps its own private Postgres schema. It builds local projections f
 
 ```text
 .
-├── README.md                # This file
+├── README.md                # This file (single source of truth)
 ├── .gitignore
 └── post-auction/
     ├── package.json
@@ -29,7 +29,6 @@ The service keeps its own private Postgres schema. It builds local projections f
     ├── .dockerignore
     ├── .env.example
     ├── .gitignore
-    ├── README.md             # Service-level README
     ├── src/
     │   ├── app.js
     │   ├── controllers/fulfillment.controller.js
