@@ -1,5 +1,6 @@
 DROP TABLE IF EXISTS event_store CASCADE;
 DROP TABLE IF EXISTS captain_payments CASCADE;
+DROP TABLE IF EXISTS fulfillment_sessions CASCADE;
 DROP TABLE IF EXISTS fulfillment_sales CASCADE;
 DROP TABLE IF EXISTS processed_events CASCADE;
 DROP TABLE IF EXISTS members_projection CASCADE;
@@ -143,16 +144,28 @@ CREATE TABLE fulfillment_sales (
 CREATE TABLE captain_payments (
   captain_payment_id UUID PRIMARY KEY,
   session_id VARCHAR(100) NOT NULL,
+  basket_id VARCHAR(100) NOT NULL,
   member_id VARCHAR(100),
   captain_name VARCHAR(255),
   boat_name VARCHAR(255) NOT NULL,
   gross_amount NUMERIC(12, 2) NOT NULL,
   commission_amount NUMERIC(12, 2) NOT NULL,
   net_amount NUMERIC(12, 2) NOT NULL,
-  basket_ids JSONB NOT NULL,
   status VARCHAR(50) NOT NULL DEFAULT 'CALCULATED',
   calculated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (session_id, boat_name)
+  UNIQUE (session_id, basket_id)
+);
+
+CREATE TABLE fulfillment_sessions (
+  session_id VARCHAR(100) PRIMARY KEY,
+  title VARCHAR(255),
+  total_baskets INTEGER,
+  status VARCHAR(50) NOT NULL DEFAULT 'OPEN',
+  total_sales INTEGER NOT NULL DEFAULT 0,
+  total_revenue NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  total_captain_payments NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  closed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_event_store_aggregate ON event_store (aggregate_type, aggregate_id);

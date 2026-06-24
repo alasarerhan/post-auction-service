@@ -70,7 +70,6 @@ test("Post-Auction fulfillment flow persists state and records outbound events",
   await service.schedulePickup("basket-1", "Pier 1", "18:00-20:00");
   await service.checkDelivery("basket-1");
   await service.completeBasket("basket-1");
-  await service.calculateCaptainPayments("session-1");
   await service.closeAuction("session-1");
 
   const sales = await pool.query("SELECT * FROM fulfillment_sales WHERE basket_id = 'basket-1'");
@@ -119,7 +118,7 @@ test("Fulfillment page renders and shows persisted sale", async () => {
     assert.equal(response.status, 200);
     assert.match(html, /Post-Auction & Fulfillment/);
     assert.match(html, /basket-1/);
-    assert.match(html, /Captain payouts/);
+    assert.match(html, /Captain payout/);
   } finally {
     server.close();
   }

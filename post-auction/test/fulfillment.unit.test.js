@@ -33,6 +33,12 @@ function createMockPool() {
         return { rowCount: 1, rows: [{ boat_name: "Boat A", member_id: "member-1" }] };
       }
       if (sql.includes("INSERT INTO processed_events")) return { rowCount: 1, rows: [] };
+      if (sql.includes("SELECT session_id FROM fulfillment_sales")) {
+        return { rowCount: 1, rows: [{ session_id: state.sale.session_id }] };
+      }
+      if (sql.includes("SELECT status FROM fulfillment_sessions")) {
+        return { rowCount: 0, rows: [] };
+      }
       if (sql.includes("INSERT INTO fulfillment_sales")) return { rowCount: 1, rows: [state.sale] };
       if (sql.includes("UPDATE fulfillment_sales") && sql.includes("pickup_location")) {
         state.sale = { ...state.sale, pickup_location: params[1], pickup_time_window: params[2], fulfillment_status: "PICKUP_SCHEDULED" };

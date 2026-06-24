@@ -1,5 +1,25 @@
 const fulfillmentService = require("../domain/fulfillment.service");
 
+async function renderWithError(res, next, error) {
+  if (error && (error.code === "SESSION_CLOSED" || error.code === "SESSION_HAS_PENDING")) {
+    try {
+      const [dashboard, snapshot] = await Promise.all([
+        fulfillmentService.getFulfillmentData(),
+        fulfillmentService.getFulfillmentSnapshot()
+      ]);
+      return res.status(409).render("fulfillment", {
+        dashboard,
+        snapshotToken: snapshot.token,
+        error: error.message,
+        notice: null
+      });
+    } catch (renderError) {
+      return next(renderError);
+    }
+  }
+  return next(error);
+}
+
 async function renderFulfillmentDashboard(req, res, next) {
   try {
     const [dashboard, snapshot] = await Promise.all([
@@ -10,7 +30,8 @@ async function renderFulfillmentDashboard(req, res, next) {
     res.render("fulfillment", {
       dashboard,
       snapshotToken: snapshot.token,
-      error: null
+      error: null,
+      notice: req.query.notice || null
     });
   } catch (error) {
     next(error);
@@ -29,45 +50,36 @@ async function getFulfillmentSnapshot(req, res, next) {
 async function schedulePickup(req, res, next) {
   try {
     await fulfillmentService.schedulePickup(req.params.basketId, req.body.pickupLocation, req.body.pickupTimeWindow);
-    res.redirect("/fulfillment");
+    res.redirect("/fulfillment?notice=pickup");
   } catch (error) {
-    next(error);
+    renderWithError(res, next, error);
   }
 }
 
 async function checkDelivery(req, res, next) {
   try {
-    await fulfillmentService.checkDelivery(req.params.basketId, req.body.address);
-    res.redirect("/fulfillment");
+    const sale = await fulfillmentService.checkDelivery(req.params.basketId, req.body.address);
+    res.redirect("/fulfillment?notice=" + (sale && sale.delivery_available ? "delivery_ok" : "delivery_no"));
   } catch (error) {
-    next(error);
+    renderWithError(res, next, error);
   }
 }
 
 async function completeBasket(req, res, next) {
   try {
     await fulfillmentService.completeBasket(req.params.basketId);
-    res.redirect("/fulfillment");
+    res.redirect("/fulfillment?notice=completed");
   } catch (error) {
-    next(error);
-  }
-}
-
-async function calculateCaptainPayments(req, res, next) {
-  try {
-    await fulfillmentService.calculateCaptainPayments(req.params.sessionId);
-    res.redirect("/fulfillment");
-  } catch (error) {
-    next(error);
+    renderWithError(res, next, error);
   }
 }
 
 async function closeAuction(req, res, next) {
   try {
-    await fulfillmentService.closeAuction(req.params.sessionId);
-    res.redirect("/fulfillment");
+    const result = await fulfillmentService.closeAuction(req.params.sessionId);
+    res.redirect("/fulfillment?notice=" + (result && result.alreadyClosed ? "already_closed" : "closed"));
   } catch (error) {
-    next(error);
+    renderWithError(res, next, error);
   }
 }
 
@@ -77,6 +89,5 @@ module.exports = {
   schedulePickup,
   checkDelivery,
   completeBasket,
-  calculateCaptainPayments,
   closeAuction
 };

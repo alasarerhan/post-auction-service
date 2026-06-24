@@ -5,286 +5,150 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Post-Auction Fulfillment</title>
     <style>
-      body {
-        font-family: Arial, sans-serif;
-        margin: 2rem;
-        background: #f6f8fb;
-        color: #1d2939;
-      }
-      .card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-      }
-      a {
-        color: #0057b8;
-        text-decoration: none;
-      }
-      .muted {
-        color: #667085;
-      }
-      .badge {
-        display: inline-block;
-        padding: 0.2rem 0.6rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        font-weight: 600;
-      }
-      .badge-recorded {
-        background: #e0f2fe;
-        color: #075985;
-      }
-      .badge-completed {
-        background: #dcfce7;
-        color: #166534;
-      }
-      .badge-pending {
-        background: #fef9c3;
-        color: #854d0e;
-      }
-      .danger {
-        background: #fee2e2;
-        color: #991b1b;
-      }
+      body { font-family: Arial, sans-serif; margin: 2rem; background: #f6f8fb; color: #1d2939; }
+      .card { background: #ffffff; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
+      a { color: #0057b8; text-decoration: none; }
+      .muted { color: #667085; }
 
-      /* Stats row */
-      .stats-row {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 0.75rem;
-        margin-bottom: 1rem;
-      }
-      .stat-card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-      }
-      .stat-label {
-        font-size: 0.8rem;
-        color: #667085;
-        margin-bottom: 0.25rem;
-      }
-      .stat-value {
-        font-size: 1.4rem;
-        font-weight: 700;
-      }
+      .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.02em; }
+      .badge-recorded { background: #e0f2fe; color: #075985; }
+      .badge-completed { background: #dcfce7; color: #166534; }
+      .badge-pending { background: #fef9c3; color: #854d0e; }
+      .badge-pickup { background: #ede9fe; color: #5b21b6; }
+      .badge-closed { background: #e5e7eb; color: #374151; }
+      .badge-open { background: #dbeafe; color: #1e40af; }
+      .danger { background: #fee2e2; color: #991b1b; }
 
-      /* Sale cards */
-      .sale-card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 1.25rem 1.5rem;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-      }
-      .sale-card.completed {
-        border-left: 4px solid #16a34a;
-        border-radius: 0 12px 12px 0;
-      }
-      .sale-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 0.75rem;
-      }
-      .sale-title {
-        font-size: 1rem;
-        font-weight: 700;
-        margin-bottom: 0.15rem;
-      }
-      .sale-detail {
-        font-size: 0.85rem;
-        color: #667085;
-      }
-      .sale-price {
-        font-size: 1.25rem;
-        font-weight: 700;
-        text-align: right;
-        white-space: nowrap;
-      }
-      .sale-price .currency {
-        font-size: 0.75rem;
-        font-weight: 400;
-        color: #667085;
-      }
-      .badges-row {
-        display: flex;
-        gap: 0.4rem;
-        margin-top: 0.4rem;
-      }
+      /* Toast (top-right notification) */
+      .toast { position: fixed; top: 1.25rem; right: 1.25rem; z-index: 9999; padding: 0.75rem 1.1rem; border-radius: 10px; font-size: 0.9rem; font-weight: 600; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18); display: flex; align-items: center; gap: 0.5rem; animation: toastIn 0.25s ease; }
+      .toast-ok { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+      .toast-warn { background: #fef9c3; color: #854d0e; border: 1px solid #fde68a; }
+      .toast-ic { font-weight: 700; }
+      .toast.hide { opacity: 0; transition: opacity 0.4s ease; }
+      @keyframes toastIn { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-      /* Sale metadata grid */
-      .sale-meta {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 0.5rem;
-        margin-bottom: 0.75rem;
-        font-size: 0.85rem;
-      }
-      .meta-label {
-        color: #667085;
-      }
-      .meta-value {
-        font-weight: 600;
-        margin-top: 0.15rem;
-      }
+      /* Tabs */
+      .tabs { display: flex; gap: 0.25rem; margin-bottom: 1.25rem; border-bottom: 1px solid #e5e7eb; }
+      .tab { border: none; background: none; padding: 0.6rem 1.1rem; font-size: 0.9rem; font-weight: 700; color: #667085; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+      .tab:hover { color: #1d2939; }
+      .tab.active { color: #0057b8; border-bottom-color: #0057b8; }
+      [data-pane] { display: none; }
+      [data-pane].active-pane { display: block; }
+      .payout-session-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.6rem; padding-bottom: 0.6rem; border-bottom: 1px solid #eef1f5; }
 
-      /* Action buttons row */
-      .sale-actions {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-      .action-form {
-        display: flex;
-        gap: 0.4rem;
-        align-items: center;
-        margin: 0;
-      }
-      .action-form input {
-        box-sizing: border-box;
-        padding: 0.45rem 0.65rem;
-        border-radius: 8px;
-        border: 1px solid #cbd5e1;
-        font-size: 0.82rem;
-        width: auto;
-        min-width: 120px;
-      }
-      .btn {
-        box-sizing: border-box;
-        padding: 0.5rem 0.85rem;
-        border-radius: 8px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        color: #1d2939;
-        cursor: pointer;
-        font-size: 0.82rem;
-        white-space: nowrap;
-      }
-      .btn:hover {
-        background: #f6f8fb;
-      }
-      .btn-primary {
-        background: #0057b8;
-        color: #ffffff;
-        border-color: #0057b8;
-      }
-      .btn-primary:hover {
-        background: #004a9e;
-      }
-      .btn-danger {
-        color: #991b1b;
-        border-color: #fca5a5;
-      }
-      .btn-danger:hover {
-        background: #fef2f2;
-      }
+      /* Stats */
+      .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
+      .stat-card { background: #ffffff; border-radius: 12px; padding: 1rem 1.25rem; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
+      .stat-label { font-size: 0.78rem; color: #667085; margin-bottom: 0.2rem; }
+      .stat-value { font-size: 1.4rem; font-weight: 700; }
 
-      /* Layout */
-      .layout {
-        display: grid;
-        grid-template-columns: 2fr 1fr;
-        gap: 1rem;
-        align-items: start;
+      /* Auction (session) panel */
+      .auction-panel { background: #ffffff; border-radius: 12px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); margin-bottom: 1.25rem; overflow: hidden; }
+      .auction-panel.closed { opacity: 0.96; }
+      .auction-header {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        padding: 1rem 1.5rem; border-bottom: 1px solid #eef1f5; background: #fbfcfe;
       }
-      .section-title {
-        font-size: 1rem;
-        font-weight: 700;
-        margin-bottom: 0.75rem;
-        color: #1d2939;
-      }
+      .auction-name { font-size: 1.05rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+      .auction-name .sid { font-family: monospace; font-size: 0.82rem; color: #475569; background: #f1f5f9; padding: 0.1rem 0.45rem; border-radius: 5px; }
+      .auction-progress { font-size: 0.76rem; margin-top: 0.3rem; }
+      .auction-actions { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+      .close-hint { font-size: 0.72rem; white-space: nowrap; }
+      .auction-body { padding: 1.25rem 1.5rem; }
+      .sub-title { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #94a3b8; margin: 0.25rem 0 0.6rem; display: flex; align-items: center; justify-content: space-between; }
+      .sub-title:not(:first-child) { margin-top: 1.4rem; }
 
-      /* Session actions */
-      .session-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0.75rem 1rem;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        margin-bottom: 0.5rem;
-        background: #ffffff;
-      }
-      .session-id {
-        font-size: 0.82rem;
-        font-weight: 600;
-        word-break: break-all;
-      }
-      .session-btns {
-        display: flex;
-        gap: 0.4rem;
-        flex-shrink: 0;
-      }
+      /* Basket */
+      .basket { border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 0.6rem; overflow: hidden; }
+      .basket.done { border-left: 3px solid #16a34a; }
+      .basket-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 0.9rem 1.1rem; }
+      .basket-title { font-size: 0.95rem; font-weight: 700; }
+      .basket-sub { font-size: 0.8rem; color: #667085; margin-top: 0.15rem; }
+      .basket-ref { font-family: monospace; font-size: 0.74rem; background: #f1f5f9; color: #334155; padding: 0.05rem 0.35rem; border-radius: 4px; }
+      .basket-price { font-size: 1.15rem; font-weight: 700; white-space: nowrap; }
+      .basket-price .currency { font-size: 0.7rem; font-weight: 400; color: #667085; }
+      .badges-row { display: flex; gap: 0.35rem; margin-top: 0.45rem; flex-wrap: wrap; }
 
-      /* Captain payouts table */
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th, td {
-        padding: 0.75rem;
-        border-bottom: 1px solid #e5e7eb;
-        text-align: left;
-        vertical-align: top;
-      }
+      /* Fulfillment summary (completed/closed) */
+      .ff-summary { padding: 0.7rem 1.1rem; background: #f6f8fb; border-top: 1px solid #eef1f5; font-size: 0.82rem; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+      .ff-summary .ic { color: #16a34a; font-weight: 700; }
 
-      /* Empty state */
-      .empty-state {
-        text-align: center;
-        padding: 2rem 1rem;
-        color: #667085;
-      }
+      /* Flow steps */
+      .steps { border-top: 1px solid #eef1f5; padding: 0.9rem 1.1rem; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; }
+      .step { padding: 0.4rem 0.85rem; }
+      .step:not(:last-child) { border-right: 1px solid #eef1f5; }
+      .step-label { font-size: 0.78rem; font-weight: 600; display: flex; align-items: center; gap: 0.4rem; }
+      .step-num { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #e5e7eb; color: #667085; font-size: 0.68rem; font-weight: 700; flex-shrink: 0; }
+      .step-num.done { background: #dcfce7; color: #166534; }
+      .step-num.active { background: #0057b8; color: #ffffff; }
+      .step-body { margin-top: 0.55rem; }
+      .step-body input { box-sizing: border-box; width: 100%; padding: 0.45rem 0.6rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.78rem; margin-bottom: 0.35rem; color: #1d2939; }
+      .step-body input:focus { outline: none; border-color: #0057b8; box-shadow: 0 0 0 2px rgba(0, 87, 184, 0.15); }
+      .step-locked { font-size: 0.75rem; color: #94a3b8; }
+      .result-ok { font-size: 0.78rem; color: #16a34a; font-weight: 600; }
+      .result-no { font-size: 0.78rem; color: #b45309; font-weight: 600; }
+      .done-text { font-size: 0.76rem; color: #16a34a; font-weight: 500; margin-bottom: 0.4rem; }
+      .hint { font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem; }
 
-      @media (max-width: 900px) {
-        .layout {
-          grid-template-columns: 1fr;
-        }
-        .stats-row {
-          grid-template-columns: repeat(2, 1fr);
-        }
-        .sale-meta {
-          grid-template-columns: 1fr;
-        }
-        .sale-actions {
-          flex-direction: column;
-          align-items: stretch;
-        }
-        .action-form {
-          flex-direction: column;
-          align-items: stretch;
-        }
-        .action-form input {
-          width: 100%;
-          min-width: 0;
-        }
-        .session-row {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 0.5rem;
-        }
-        .session-btns {
-          width: 100%;
-        }
-        .session-btns form {
-          flex: 1;
-        }
-        .session-btns .btn {
-          width: 100%;
-        }
+      .btn { box-sizing: border-box; padding: 0.45rem 0.75rem; border-radius: 6px; border: 1px solid #cbd5e1; background: #ffffff; color: #1d2939; cursor: pointer; font-size: 0.78rem; white-space: nowrap; width: 100%; text-align: center; }
+      .btn:hover { background: #f6f8fb; }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .btn-primary { background: #0057b8; color: #fff; border-color: #0057b8; }
+      .btn-primary:hover { background: #004a9e; }
+      .btn-success { background: #16a34a; color: #fff; border-color: #16a34a; }
+      .btn-success:hover { background: #15803d; }
+      .btn-danger { color: #991b1b; border-color: #fca5a5; }
+      .btn-danger:hover { background: #fef2f2; }
+      .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.75rem; width: auto; }
+
+      .step-edit { margin-top: 0.4rem; }
+      .step-edit summary { font-size: 0.72rem; color: #0057b8; cursor: pointer; list-style: none; user-select: none; }
+      .step-edit summary::-webkit-details-marker { display: none; }
+      .step-edit summary::before { content: "\270E  "; }
+
+      /* Captain payout (inside panel) */
+      .payout-group { padding: 0.55rem 0; border-bottom: 1px solid #eef1f5; }
+      .payout-group:last-child { border-bottom: none; }
+      .payout-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+      .payout-head .muted { font-size: 0.78rem; margin-left: 0.35rem; }
+      .payout-total { font-size: 1.05rem; font-weight: 700; white-space: nowrap; }
+      .payout-total .currency { font-size: 0.7rem; font-weight: 400; color: #667085; }
+      .payout-meta { font-size: 0.72rem; margin-top: 0.15rem; }
+      .payout-basket { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.4rem; padding-left: 0.5rem; font-size: 0.78rem; }
+      .empty-state { text-align: center; padding: 2rem 1rem; color: #667085; }
+
+      @media (max-width: 700px) {
+        body { margin: 1rem; }
+        .stats-row { grid-template-columns: repeat(2, 1fr); }
+        .steps { grid-template-columns: 1fr; }
+        .step:not(:last-child) { border-right: none; border-bottom: 1px solid #eef1f5; padding-bottom: 0.7rem; margin-bottom: 0.5rem; }
+        .auction-header { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
       }
     </style>
   </head>
   <body data-page="fulfillment" data-snapshot-token="<%= snapshotToken %>">
+    <%
+      const noticeMap = {
+        pickup: { text: 'Pickup scheduled', type: 'ok' },
+        delivery_ok: { text: 'Delivery available for this address', type: 'ok' },
+        delivery_no: { text: 'Address is out of the delivery area', type: 'warn' },
+        completed: { text: 'Basket completed', type: 'ok' },
+        closed: { text: 'Auction closed', type: 'ok' },
+        already_closed: { text: 'Auction was already closed', type: 'warn' }
+      };
+      const noticeInfo = (typeof notice !== 'undefined' && notice) ? noticeMap[notice] : null;
+    %>
+    <% if (noticeInfo) { %>
+      <div id="toast" class="toast toast-<%= noticeInfo.type %>">
+        <span class="toast-ic"><%- noticeInfo.type === 'ok' ? '&#10003;' : '!' %></span>
+        <span><%= noticeInfo.text %></span>
+      </div>
+    <% } %>
+
     <div id="liveBanner" class="card" style="display: none;">Live fulfillment update received. Refreshing view...</div>
 
     <div class="card">
-      <p><a href="/">&#8592; Post-Auction home</a></p>
       <h2>Post-Auction & Fulfillment</h2>
-      <p class="muted">Sales, pickup scheduling, delivery check, captain payout, and auction closing.</p>
       <% if (error) { %>
         <p class="badge danger"><%= error %></p>
       <% } %>
@@ -292,161 +156,299 @@
 
     <%
       const sales = dashboard.sales || [];
+      const sessionRows = dashboard.sessions || [];
+      const payments = dashboard.captainPayments || [];
+      const closedSessions = {};
+      const sessionMeta = {};
+      sessionRows.forEach((s) => {
+        sessionMeta[s.session_id] = s;
+        if (s.status === 'CLOSED') closedSessions[s.session_id] = s;
+      });
+      const isSessionClosed = (id) => Boolean(closedSessions[id]);
+
       const totalSales = sales.length;
       const totalRevenue = sales.reduce((sum, s) => sum + Number(s.sale_price || 0), 0);
-      const completedCount = sales.filter(s => s.fulfillment_status === 'COMPLETED').length;
+      const completedCount = sales.filter((s) => s.fulfillment_status === 'COMPLETED').length;
       const pendingCount = totalSales - completedCount;
+
+      const prettify = (s) => { s = String(s || ''); return s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, ' '); };
+      const groupPayouts = (rows) => {
+        const groups = {};
+        rows.forEach((p) => {
+          const key = p.boat_name || 'Unknown Boat';
+          if (!groups[key]) groups[key] = { captain: p.captain_name || p.member_id || 'Unknown Captain', boat: key, baskets: [], net: 0, gross: 0, commission: 0 };
+          const g = groups[key];
+          g.baskets.push(p);
+          g.net += Number(p.net_amount); g.gross += Number(p.gross_amount); g.commission += Number(p.commission_amount);
+        });
+        return Object.values(groups);
+      };
+
+      // Sessions = those with sales + those published (catalog.published), open first
+      const sessionIds = [...new Set([...sales.map((s) => s.session_id), ...sessionRows.map((s) => s.session_id)])]
+        .sort((a, b) => (isSessionClosed(a) ? 1 : 0) - (isSessionClosed(b) ? 1 : 0));
     %>
 
     <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-label">Total sales</div>
-        <div class="stat-value"><%= totalSales %></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Revenue</div>
-        <div class="stat-value" style="color: #16a34a;"><%= totalRevenue.toFixed(2) %></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Pending</div>
-        <div class="stat-value" style="color: #854d0e;"><%= pendingCount %></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Completed</div>
-        <div class="stat-value" style="color: #16a34a;"><%= completedCount %></div>
-      </div>
+      <div class="stat-card"><div class="stat-label">Total sales</div><div class="stat-value"><%= totalSales %></div></div>
+      <div class="stat-card"><div class="stat-label">Revenue</div><div class="stat-value" style="color: #16a34a;"><%= totalRevenue.toFixed(2) %></div></div>
+      <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" style="color: #854d0e;"><%= pendingCount %></div></div>
+      <div class="stat-card"><div class="stat-label">Completed</div><div class="stat-value" style="color: #16a34a;"><%= completedCount %></div></div>
     </div>
 
-    <div class="layout">
-      <div>
-        <div class="section-title">Sales</div>
+    <%
+      const openIds = sessionIds.filter((id) => !isSessionClosed(id));
+      const closedIds = sessionIds.filter((id) => isSessionClosed(id));
+      const payoutSessionIds = sessionIds.filter((id) => payments.some((p) => p.session_id === id));
+    %>
 
-        <% if (!sales.length) { %>
-          <div class="card empty-state">
-            <p>No sales recorded yet. Waiting for <code>bid.basket.sold</code> events.</p>
+    <div class="tabs">
+      <button class="tab active" data-tab="ongoing" onclick="showTab('ongoing')">Ongoing (<%= openIds.length %>)</button>
+      <button class="tab" data-tab="finished" onclick="showTab('finished')">Finished (<%= closedIds.length %>)</button>
+      <button class="tab" data-tab="payouts" onclick="showTab('payouts')">Captain payouts</button>
+    </div>
+
+    <% if (!openIds.length) { %>
+      <div class="card empty-state active-pane" data-pane="ongoing">
+        <p>No ongoing auctions. Waiting for <code>catalog.published</code> / <code>bid.basket.sold</code> events.</p>
+      </div>
+    <% } %>
+    <% if (!closedIds.length) { %>
+      <div class="card empty-state" data-pane="finished"><p>No finished auctions yet.</p></div>
+    <% } %>
+
+    <% sessionIds.forEach((sessionId) => {
+      const closed = closedSessions[sessionId];
+      const meta = sessionMeta[sessionId] || {};
+      const sessionSales = sales.filter((s) => s.session_id === sessionId);
+      const pendingInSession = sessionSales.filter((s) => s.fulfillment_status !== 'COMPLETED').length;
+      const completedInSession = sessionSales.filter((s) => s.fulfillment_status === 'COMPLETED').length;
+      const expectedBaskets = meta.total_baskets != null ? Number(meta.total_baskets) : null;
+    %>
+      <div class="auction-panel<%= closed ? ' closed' : ' active-pane' %>" data-pane="<%= closed ? 'finished' : 'ongoing' %>">
+        <div class="auction-header">
+          <div>
+            <div class="auction-name">
+              <% if (meta.title) { %><%= meta.title %><% } else { %>Auction<% } %>
+              <span class="sid"><%= sessionId %></span>
+              <% if (closed) { %>
+                <span class="badge badge-closed">Closed</span>
+                <% if (closed.closed_at) { %>
+                  <span class="muted" style="font-size:0.74rem;"><%= new Date(closed.closed_at).toLocaleString('tr-TR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) %></span>
+                <% } %>
+              <% } else { %>
+                <span class="badge badge-open">Open</span>
+              <% } %>
+            </div>
+            <div class="auction-progress muted">
+              <%= sessionSales.length %> sold<% if (expectedBaskets != null) { %> / <%= expectedBaskets %> expected<% } %>
+              &middot; <%= completedInSession %> completed
+            </div>
           </div>
-        <% } else { %>
-          <% sales.forEach((sale) => {
+          <div class="auction-actions">
+            <% if (!closed) { %>
+              <% if (pendingInSession > 0) { %>
+                <span class="close-hint muted"><%= pendingInSession %> basket<%= pendingInSession > 1 ? 's' : '' %> pending</span>
+                <button type="button" class="btn btn-sm" disabled title="Complete all baskets before closing">Close auction</button>
+              <% } else { %>
+                <form method="post" action="/fulfillment/sessions/<%= sessionId %>/close" style="margin:0;" onsubmit="return confirm('Close this auction? No further fulfillment actions will be allowed.');">
+                  <button type="submit" class="btn btn-sm btn-danger">Close auction</button>
+                </form>
+              <% } %>
+            <% } %>
+          </div>
+        </div>
+
+        <div class="auction-body">
+          <div class="sub-title">Baskets</div>
+
+          <% if (!sessionSales.length) { %>
+            <p class="muted" style="font-size:0.82rem;">No baskets sold yet — sales appear here as baskets are won.</p>
+          <% } %>
+          <% sessionSales.forEach((sale) => {
             const isCompleted = sale.fulfillment_status === 'COMPLETED';
-            const saleStatus = (sale.sale_status || '').toUpperCase();
+            const hasDelivery = !!sale.delivery_reason;
+            const deliveryAvailable = sale.delivery_available === true;
+            const hasPickup = !!sale.pickup_location;
+            const methodReady = deliveryAvailable || hasPickup;
             const fulfillmentStatus = (sale.fulfillment_status || '').toUpperCase();
+            let ffBadge = 'badge-pending';
+            if (fulfillmentStatus === 'COMPLETED') ffBadge = 'badge-completed';
+            else if (fulfillmentStatus === 'PICKUP_SCHEDULED') ffBadge = 'badge-pickup';
+            const locked = closed && !isCompleted;
           %>
-            <div class="sale-card<%= isCompleted ? ' completed' : '' %>">
-              <div class="sale-header">
+            <div class="basket<%= isCompleted ? ' done' : '' %>">
+              <div class="basket-head">
                 <div>
-                  <div class="sale-title"><%= sale.species || 'Unknown species' %> &mdash; <%= sale.quantity || '' %> <%= sale.unit || '' %></div>
-                  <div class="sale-detail">
-                    <%= sale.buyer_name || sale.buyer_id %> &middot; <%= sale.buyer_address || 'No address' %>
-                    <% if (sale.boat_name && sale.boat_name !== 'Unknown') { %>
-                      &middot; <%= sale.boat_name %>
-                    <% } %>
+                  <div class="basket-title"><%= sale.species || 'Unknown species' %> &mdash; <%= sale.quantity || '' %> <%= sale.unit || '' %></div>
+                  <div class="basket-sub">
+                    <code class="basket-ref"><%= sale.basket_id %></code>
+                    &middot; <%= sale.buyer_name || sale.buyer_id %> &middot; <%= sale.buyer_address || 'No address' %>
                   </div>
                   <div class="badges-row">
-                    <span class="badge <%= saleStatus === 'COMPLETED' ? 'badge-completed' : 'badge-recorded' %>"><%= saleStatus %></span>
-                    <span class="badge <%= fulfillmentStatus === 'COMPLETED' ? 'badge-completed' : 'badge-pending' %>"><%= fulfillmentStatus %></span>
+                    <span class="badge <%= ffBadge %>"><%= prettify(fulfillmentStatus) %></span>
                   </div>
                 </div>
-                <div class="sale-price<%= isCompleted ? '' : '' %>">
-                  <%= Number(sale.sale_price).toFixed(2) %> <span class="currency">TL</span>
-                </div>
+                <div class="basket-price"><%= Number(sale.sale_price).toFixed(2) %> <span class="currency">TL</span></div>
               </div>
 
-              <% if (sale.pickup_location || sale.delivery_reason) { %>
-                <div class="sale-meta">
-                  <% if (sale.pickup_location) { %>
-                    <div>
-                      <div class="meta-label">Pickup</div>
-                      <div class="meta-value"><%= sale.pickup_location %></div>
-                    </div>
+              <% if (isCompleted) { %>
+                <div class="ff-summary">
+                  <span class="ic">&#10003;</span>
+                  <% if (deliveryAvailable) { %>
+                    Delivered to <strong><%= sale.delivery_address || sale.buyer_address %></strong>
+                  <% } else if (hasPickup) { %>
+                    Picked up at <strong><%= sale.pickup_location %></strong> &middot; <%= sale.pickup_time_window %>
+                  <% } else { %>
+                    Completed
                   <% } %>
-                  <% if (sale.pickup_time_window) { %>
-                    <div>
-                      <div class="meta-label">Time</div>
-                      <div class="meta-value"><%= sale.pickup_time_window %></div>
+                </div>
+              <% } else if (locked) { %>
+                <div class="ff-summary muted">Auction closed before this basket was completed.</div>
+              <% } else { %>
+                <div class="steps">
+                  <!-- Step 1: Check delivery (always first) -->
+                  <div class="step">
+                    <div class="step-label">
+                      <span class="step-num<%= hasDelivery ? ' done' : ' active' %>"><%- hasDelivery ? '&#10003;' : '1' %></span>
+                      Check delivery
                     </div>
-                  <% } %>
-                  <% if (sale.delivery_reason) { %>
-                    <div>
-                      <div class="meta-label">Delivery</div>
-                      <div class="meta-value"><%= sale.delivery_available ? 'Available' : 'Unavailable' %> (<%= sale.delivery_reason %>)</div>
+                    <div class="step-body">
+                      <% if (!hasDelivery) { %>
+                        <form method="post" action="/fulfillment/sales/<%= sale.basket_id %>/delivery/check" style="margin:0;">
+                          <input name="address" placeholder="Delivery address" value="<%= sale.delivery_address || sale.buyer_address || '' %>" />
+                          <button type="submit" class="btn">Check delivery</button>
+                        </form>
+                      <% } else { %>
+                        <% if (deliveryAvailable) { %>
+                          <div class="result-ok">&#10003; In delivery area</div>
+                        <% } else { %>
+                          <div class="result-no">&#10007; Out of delivery area</div>
+                        <% } %>
+                        <div class="muted" style="font-size:0.74rem; margin-top:0.2rem;"><%= sale.delivery_address %></div>
+                        <details class="step-edit">
+                          <summary>Recheck address</summary>
+                          <form method="post" action="/fulfillment/sales/<%= sale.basket_id %>/delivery/check" style="margin:0;">
+                            <input name="address" placeholder="Delivery address" value="<%= sale.delivery_address || sale.buyer_address || '' %>" />
+                            <button type="submit" class="btn">Recheck</button>
+                          </form>
+                        </details>
+                      <% } %>
                     </div>
-                  <% } %>
+                  </div>
+
+                  <!-- Step 2: Fulfillment method (branch) -->
+                  <div class="step">
+                    <div class="step-label">
+                      <span class="step-num<%= methodReady ? ' done' : (hasDelivery && !deliveryAvailable ? ' active' : '') %>"><%- methodReady ? '&#10003;' : '2' %></span>
+                      Fulfillment
+                    </div>
+                    <div class="step-body">
+                      <% if (!hasDelivery) { %>
+                        <div class="step-locked">Check delivery first</div>
+                      <% } else if (deliveryAvailable) { %>
+                        <div class="done-text">&#128666; Will be delivered to buyer address</div>
+                      <% } else { %>
+                        <!-- Out of area: buyer must pick up -->
+                        <form method="post" action="/fulfillment/sales/<%= sale.basket_id %>/pickup" style="margin:0;">
+                          <% if (hasPickup) { %>
+                            <div class="done-text">&#10003; <%= sale.pickup_location %> / <%= sale.pickup_time_window %></div>
+                          <% } %>
+                          <button type="submit" class="btn btn-primary"><%= hasPickup ? 'Reschedule pickup' : 'Schedule pickup' %></button>
+                          <details class="step-edit">
+                            <summary>Edit location &amp; time</summary>
+                            <input name="pickupLocation" placeholder="Location" value="<%= sale.pickup_location || 'Fish Auction Pickup Point' %>" />
+                            <input name="pickupTimeWindow" placeholder="Time window" value="<%= sale.pickup_time_window || 'Today 18:00-20:00' %>" />
+                          </details>
+                        </form>
+                      <% } %>
+                    </div>
+                  </div>
+
+                  <!-- Step 3: Complete -->
+                  <div class="step">
+                    <div class="step-label">
+                      <span class="step-num">3</span>
+                      Complete
+                    </div>
+                    <div class="step-body">
+                      <% if (methodReady) { %>
+                        <form method="post" action="/fulfillment/sales/<%= sale.basket_id %>/complete" style="margin:0;">
+                          <button type="submit" class="btn btn-success">Complete basket</button>
+                        </form>
+                      <% } else { %>
+                        <button type="button" class="btn" disabled>Complete basket</button>
+                        <div class="hint">Determine fulfillment first</div>
+                      <% } %>
+                    </div>
+                  </div>
                 </div>
               <% } %>
-
-              <div class="sale-actions">
-                <form class="action-form" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/pickup">
-                  <input name="pickupLocation" placeholder="Pickup location" value="<%= sale.pickup_location || 'Fish Auction Pickup Point' %>" />
-                  <input name="pickupTimeWindow" placeholder="Time window" value="<%= sale.pickup_time_window || 'Today 18:00-20:00' %>" />
-                  <button type="submit" class="btn btn-primary">Schedule pickup</button>
-                </form>
-                <form class="action-form" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/delivery/check">
-                  <input name="address" placeholder="Delivery address" value="<%= sale.delivery_address || sale.buyer_address || '' %>" />
-                  <button type="submit" class="btn">Check delivery</button>
-                </form>
-                <form class="action-form" method="post" action="/fulfillment/sales/<%= sale.basket_id %>/complete">
-                  <button type="submit" class="btn">Complete basket</button>
-                </form>
-              </div>
-            </div>
-          <% }) %>
-        <% } %>
-      </div>
-
-      <div>
-        <div class="card">
-          <div class="section-title">Session actions</div>
-          <% const sessionIds = [...new Set(sales.map((sale) => sale.session_id))]; %>
-          <% if (!sessionIds.length) { %>
-            <p class="muted">No session with sales yet.</p>
-          <% } %>
-          <% sessionIds.forEach((sessionId) => { %>
-            <div class="session-row">
-              <div class="session-id"><%= sessionId %></div>
-              <div class="session-btns">
-                <form method="post" action="/fulfillment/sessions/<%= sessionId %>/captain-payments/calculate" style="margin:0;">
-                  <button type="submit" class="btn">Captain payouts</button>
-                </form>
-                <form method="post" action="/fulfillment/sessions/<%= sessionId %>/close" style="margin:0;">
-                  <button type="submit" class="btn btn-danger">Close auction</button>
-                </form>
-              </div>
             </div>
           <% }) %>
         </div>
-
-        <div class="card">
-          <div class="section-title">Captain payouts</div>
-          <% if (!dashboard.captainPayments.length) { %>
-            <p class="muted">No captain payout calculated yet.</p>
-          <% } else { %>
-            <table>
-              <thead>
-                <tr>
-                  <th>Captain / Boat</th>
-                  <th>Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                <% dashboard.captainPayments.forEach((payment) => { %>
-                  <tr>
-                    <td>
-                      <strong><%= payment.captain_name || payment.member_id || 'Unknown Captain' %></strong><br />
-                      <span class="muted"><%= payment.boat_name %></span>
-                    </td>
-                    <td>
-                      <strong><%= Number(payment.net_amount).toFixed(2) %></strong><br />
-                      <span class="muted">Gross <%= Number(payment.gross_amount).toFixed(2) %>, commission <%= Number(payment.commission_amount).toFixed(2) %></span>
-                    </td>
-                  </tr>
-                <% }) %>
-              </tbody>
-            </table>
-          <% } %>
-        </div>
       </div>
+    <% }) %>
+
+    <!-- Captain payouts tab -->
+    <div data-pane="payouts">
+      <% if (!payoutSessionIds.length) { %>
+        <div class="card empty-state"><p>No captain payouts yet — they appear as baskets are completed.</p></div>
+      <% } else { %>
+        <% payoutSessionIds.forEach((sessionId) => {
+          const closed = closedSessions[sessionId];
+          const meta = sessionMeta[sessionId] || {};
+          const groups = groupPayouts(payments.filter((p) => p.session_id === sessionId));
+          const sessionTotal = groups.reduce((sum, g) => sum + g.net, 0);
+        %>
+          <div class="card">
+            <div class="payout-session-head">
+              <div class="auction-name" style="font-size:0.98rem;">
+                <% if (meta.title) { %><%= meta.title %><% } else { %>Auction<% } %>
+                <span class="sid"><%= sessionId %></span>
+                <% if (closed) { %><span class="badge badge-completed"><%- '&#10003;' %> Final</span><% } else { %><span class="badge badge-pending">Provisional</span><% } %>
+              </div>
+              <div class="payout-total"><%= sessionTotal.toFixed(2) %> <span class="currency">TL</span></div>
+            </div>
+            <% groups.forEach((group) => { %>
+              <div class="payout-group">
+                <div class="payout-head">
+                  <div><strong><%= group.captain %></strong><span class="muted"><%= group.boat %></span></div>
+                  <div class="payout-total"><%= group.net.toFixed(2) %> <span class="currency">TL</span></div>
+                </div>
+                <div class="payout-meta muted">Gross <%= group.gross.toFixed(2) %> &middot; commission <%= group.commission.toFixed(2) %> &middot; <%= group.baskets.length %> basket<%= group.baskets.length > 1 ? 's' : '' %></div>
+                <% if (group.baskets.length > 1) { %>
+                  <% group.baskets.forEach((b) => { %>
+                    <div class="payout-basket">
+                      <code class="basket-ref"><%= b.basket_id %></code>
+                      <span><%= Number(b.net_amount).toFixed(2) %></span>
+                    </div>
+                  <% }) %>
+                <% } %>
+              </div>
+            <% }) %>
+          </div>
+        <% }) %>
+      <% } %>
     </div>
 
+    <script>
+      function showTab(name) {
+        document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
+        document.querySelectorAll('[data-pane]').forEach(function (p) { p.classList.toggle('active-pane', p.dataset.pane === name); });
+      }
+
+      (function () {
+        var t = document.getElementById('toast');
+        if (!t) return;
+        // Remove ?notice from the URL so a refresh doesn't replay the toast
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', '/fulfillment');
+        }
+        setTimeout(function () { t.classList.add('hide'); }, 3200);
+        setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 3700);
+      })();
+    </script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/main.js"></script>
   </body>

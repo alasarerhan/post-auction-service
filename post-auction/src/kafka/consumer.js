@@ -57,6 +57,9 @@ async function start() {
           case topics.consumedTopics.CATALOG_BASKET_CREATED:
             await fulfillmentService.handleBasketCreated(payload);
             break;
+          case topics.consumedTopics.CATALOG_PUBLISHED:
+            await fulfillmentService.handleCatalogPublished(payload);
+            break;
           case topics.consumedTopics.BID_BASKET_SOLD:
             await fulfillmentService.handleBasketSold(payload);
             break;

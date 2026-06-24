@@ -7,7 +7,26 @@ const { getIo } = require("../socket");
 
 const DEFAULT_COMMISSION_RATE = 0.1;
 const DEFAULT_PICKUP_LOCATION = "Fish Auction Pickup Point";
-const NEARBY_KEYWORDS = ["iyte", "gulbahce", "urla", "izmir"];
+const NEARBY_KEYWORDS = [
+  "iyte",
+  "izmir",
+  // Urla ve mahalleleri/köyleri
+  "urla",
+  "gulbahce",
+  "zeytineli",
+  "balikliova",
+  "ozbek",
+  "bademler",
+  "barbaros",
+  "kuscular",
+  "demircili",
+  // Çevre ilçeler / yarımada
+  "guzelbahce",
+  "karaburun",
+  "mordogan",
+  "cesme",
+  "seferihisar"
+];
 
 function toNumber(value) {
   const parsed = Number(value);
@@ -103,6 +122,34 @@ function createFulfillmentService(deps = {}) {
     }
   }
 
+  async function getSessionStatus(client, sessionId) {
+    const result = await client.query(
+      "SELECT status FROM fulfillment_sessions WHERE session_id = $1",
+      [sessionId]
+    );
+    return result.rows[0] ? result.rows[0].status : "OPEN";
+  }
+
+  async function assertSessionOpen(client, sessionId) {
+    const status = await getSessionStatus(client, sessionId);
+    if (status === "CLOSED") {
+      const error = new Error("This auction is closed; no further fulfillment actions are allowed.");
+      error.code = "SESSION_CLOSED";
+      throw error;
+    }
+  }
+
+  async function getSessionIdByBasket(client, basketId) {
+    const result = await client.query(
+      "SELECT session_id FROM fulfillment_sales WHERE basket_id = $1",
+      [basketId]
+    );
+    if (result.rowCount === 0) {
+      throw new Error("Sale not found");
+    }
+    return result.rows[0].session_id;
+  }
+
   async function handleBuyerRegistered(payload) {
     const buyerId = payload.buyerId || payload.id;
     if (!buyerId) return;
@@ -157,6 +204,31 @@ function createFulfillmentService(deps = {}) {
         payload
       ]
     );
+  }
+
+  async function handleCatalogPublished(payload) {
+    const sessionId = payload.sessionId || payload.id;
+    if (!sessionId) return;
+
+    // The auction catalog has gone live; open the session in our projection so
+    // it shows up (with title and expected basket count) even before any sale.
+    await db.query(
+      `
+      INSERT INTO fulfillment_sessions (session_id, title, total_baskets, status, updated_at)
+      VALUES ($1, $2, $3, 'OPEN', NOW())
+      ON CONFLICT (session_id) DO UPDATE SET
+        title = COALESCE(EXCLUDED.title, fulfillment_sessions.title),
+        total_baskets = COALESCE(EXCLUDED.total_baskets, fulfillment_sessions.total_baskets),
+        updated_at = NOW()
+      `,
+      [
+        sessionId,
+        payload.title || null,
+        payload.totalBaskets != null ? Number(payload.totalBaskets) : (Array.isArray(payload.basketIds) ? payload.basketIds.length : null)
+      ]
+    );
+
+    emit(sessionId, "catalogPublished", { sessionId });
   }
 
   async function handleBasketCreated(payload) {
@@ -258,6 +330,7 @@ function createFulfillmentService(deps = {}) {
 
   async function schedulePickup(basketId, pickupLocation, pickupTimeWindow) {
     return withTx(async (client, registerEvent) => {
+      await assertSessionOpen(client, await getSessionIdByBasket(client, basketId));
       const result = await client.query(
         `
         UPDATE fulfillment_sales
@@ -296,8 +369,19 @@ function createFulfillmentService(deps = {}) {
     });
   }
 
+  function normalizeText(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/ı/g, "i")
+      .replace(/ş/g, "s")
+      .replace(/ğ/g, "g")
+      .replace(/ç/g, "c")
+      .replace(/ö/g, "o")
+      .replace(/ü/g, "u");
+  }
+
   function checkDeliveryAvailability(address) {
-    const normalized = String(address || "").toLowerCase();
+    const normalized = normalizeText(address);
     if (!normalized.trim()) {
       return { available: false, reason: "ADDRESS_MISSING" };
     }
@@ -311,6 +395,7 @@ function createFulfillmentService(deps = {}) {
 
   async function checkDelivery(basketId, address) {
     return withTx(async (client, registerEvent) => {
+      await assertSessionOpen(client, await getSessionIdByBasket(client, basketId));
       const saleResult = await client.query(
         `
         SELECT fs.*, bp.address AS buyer_address
@@ -366,6 +451,7 @@ function createFulfillmentService(deps = {}) {
 
   async function completeBasket(basketId) {
     return withTx(async (client, registerEvent) => {
+      await assertSessionOpen(client, await getSessionIdByBasket(client, basketId));
       const result = await client.query(
         `
         UPDATE fulfillment_sales
@@ -398,87 +484,96 @@ function createFulfillmentService(deps = {}) {
         sale.session_id
       );
 
+      // The basket is now empty (all fish sold), so the captain's share for
+      // this basket is calculated immediately, mirroring how a fish auction
+      // settles each lot as it finishes.
+      const boatName = sale.boat_name || "Unknown Boat";
+      const memberLookup = await client.query(
+        "SELECT member_id, member_name FROM members_projection WHERE member_id = $1 OR boat_name = $2 LIMIT 1",
+        [sale.member_id, boatName]
+      );
+      const captainName = memberLookup.rows[0] ? memberLookup.rows[0].member_name : null;
+      const resolvedMemberId = sale.member_id || (memberLookup.rows[0] ? memberLookup.rows[0].member_id : null);
+
+      const grossAmount = toNumber(sale.sale_price);
+      const commissionAmount = Number((grossAmount * commissionRate).toFixed(2));
+      const netAmount = Number((grossAmount - commissionAmount).toFixed(2));
+      const paymentId = crypto.randomUUID();
+
+      const payment = await client.query(
+        `
+        INSERT INTO captain_payments (
+          captain_payment_id, session_id, basket_id, member_id, captain_name, boat_name,
+          gross_amount, commission_amount, net_amount, status, calculated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'CALCULATED', NOW())
+        ON CONFLICT (session_id, basket_id) DO UPDATE SET
+          member_id = EXCLUDED.member_id,
+          captain_name = EXCLUDED.captain_name,
+          boat_name = EXCLUDED.boat_name,
+          gross_amount = EXCLUDED.gross_amount,
+          commission_amount = EXCLUDED.commission_amount,
+          net_amount = EXCLUDED.net_amount,
+          calculated_at = NOW()
+        RETURNING *
+        `,
+        [paymentId, sale.session_id, basketId, resolvedMemberId, captainName, boatName, grossAmount, commissionAmount, netAmount]
+      );
+      const paymentRow = payment.rows[0];
+
+      await registerEvent(
+        "fulfillment.captain.payment.calculated",
+        sale.session_id,
+        {
+          sessionId: sale.session_id,
+          basketId,
+          memberId: paymentRow.member_id || undefined,
+          captainName: paymentRow.captain_name || undefined,
+          boatName: paymentRow.boat_name,
+          grossAmount: toNumber(paymentRow.gross_amount),
+          commissionAmount: toNumber(paymentRow.commission_amount),
+          netAmount: toNumber(paymentRow.net_amount)
+        },
+        topics.publishedTopics.FULFILLMENT_CAPTAIN_PAYMENT_CALCULATED,
+        sale.session_id
+      );
+
       emit(sale.session_id, "basketCompleted", { sessionId: sale.session_id, basketId });
       return sale;
     });
   }
 
-  async function calculateCaptainPayments(sessionId) {
-    return withTx(async (client, registerEvent) => {
-      const salesResult = await client.query(
-        `
-        SELECT
-          COALESCE(fs.boat_name, cbp.boat_name, 'Unknown Boat') AS boat_name,
-          COALESCE(fs.member_id, cbp.member_id, mp.member_id) AS member_id,
-          mp.member_name AS captain_name,
-          SUM(fs.sale_price)::numeric AS gross_amount,
-          jsonb_agg(fs.basket_id ORDER BY fs.basket_id) AS basket_ids
-        FROM fulfillment_sales fs
-        LEFT JOIN catalog_baskets_projection cbp ON cbp.basket_id = fs.basket_id
-        LEFT JOIN members_projection mp ON mp.member_id = COALESCE(fs.member_id, cbp.member_id)
-          OR (mp.boat_name = COALESCE(fs.boat_name, cbp.boat_name))
-        WHERE fs.session_id = $1
-        GROUP BY COALESCE(fs.boat_name, cbp.boat_name, 'Unknown Boat'), COALESCE(fs.member_id, cbp.member_id, mp.member_id), mp.member_name
-        `,
-        [sessionId]
-      );
-
-      const payments = [];
-      for (const row of salesResult.rows) {
-        const grossAmount = toNumber(row.gross_amount);
-        const commissionAmount = Number((grossAmount * commissionRate).toFixed(2));
-        const netAmount = Number((grossAmount - commissionAmount).toFixed(2));
-        const paymentId = crypto.randomUUID();
-        const basketIds = row.basket_ids || [];
-
-        const upsert = await client.query(
-          `
-          INSERT INTO captain_payments (
-            captain_payment_id, session_id, member_id, captain_name, boat_name,
-            gross_amount, commission_amount, net_amount, basket_ids, status, calculated_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'CALCULATED', NOW())
-          ON CONFLICT (session_id, boat_name) DO UPDATE SET
-            member_id = EXCLUDED.member_id,
-            captain_name = EXCLUDED.captain_name,
-            gross_amount = EXCLUDED.gross_amount,
-            commission_amount = EXCLUDED.commission_amount,
-            net_amount = EXCLUDED.net_amount,
-            basket_ids = EXCLUDED.basket_ids,
-            calculated_at = NOW()
-          RETURNING *
-          `,
-          [paymentId, sessionId, row.member_id || null, row.captain_name || null, row.boat_name, grossAmount, commissionAmount, netAmount, JSON.stringify(basketIds)]
-        );
-
-        const payment = upsert.rows[0];
-        await registerEvent(
-          "fulfillment.captain.payment.calculated",
-          sessionId,
-          {
-            sessionId,
-            memberId: payment.member_id || undefined,
-            captainName: payment.captain_name || undefined,
-            boatName: payment.boat_name,
-            grossAmount: toNumber(payment.gross_amount),
-            commissionAmount: toNumber(payment.commission_amount),
-            netAmount: toNumber(payment.net_amount),
-            basketIds
-          },
-          topics.publishedTopics.FULFILLMENT_CAPTAIN_PAYMENT_CALCULATED,
-          sessionId
-        );
-
-        payments.push(payment);
-      }
-
-      emit(sessionId, "captainPaymentCalculated", { sessionId });
-      return payments;
-    });
-  }
-
   async function closeAuction(sessionId) {
     return withTx(async (client, registerEvent) => {
+      const existing = await client.query(
+        "SELECT * FROM fulfillment_sessions WHERE session_id = $1",
+        [sessionId]
+      );
+      if (existing.rows[0] && existing.rows[0].status === "CLOSED") {
+        const row = existing.rows[0];
+        return {
+          sessionId,
+          totalSales: Number(row.total_sales || 0),
+          totalRevenue: toNumber(row.total_revenue),
+          totalCaptainPayments: toNumber(row.total_captain_payments),
+          closedAt: toIso(row.closed_at),
+          alreadyClosed: true
+        };
+      }
+
+      // A fish auction closes only after every basket is finished. Block the
+      // close while any basket is still pending so the books stay consistent.
+      const pending = await client.query(
+        "SELECT COUNT(*)::int AS n FROM fulfillment_sales WHERE session_id = $1 AND fulfillment_status <> 'COMPLETED'",
+        [sessionId]
+      );
+      const pendingCount = Number(pending.rows[0].n || 0);
+      if (pendingCount > 0) {
+        const error = new Error(`Cannot close auction: ${pendingCount} basket(s) not completed yet.`);
+        error.code = "SESSION_HAS_PENDING";
+        throw error;
+      }
+
       const summary = await client.query(
         `
         SELECT
@@ -498,6 +593,23 @@ function createFulfillmentService(deps = {}) {
       const totalRevenue = toNumber(summary.rows[0].total_revenue);
       const totalCaptainPayments = toNumber(payments.rows[0].total_captain_payments);
       const closedAt = new Date().toISOString();
+
+      await client.query(
+        `
+        INSERT INTO fulfillment_sessions (
+          session_id, status, total_sales, total_revenue, total_captain_payments, closed_at, updated_at
+        )
+        VALUES ($1, 'CLOSED', $2, $3, $4, $5, NOW())
+        ON CONFLICT (session_id) DO UPDATE SET
+          status = 'CLOSED',
+          total_sales = EXCLUDED.total_sales,
+          total_revenue = EXCLUDED.total_revenue,
+          total_captain_payments = EXCLUDED.total_captain_payments,
+          closed_at = EXCLUDED.closed_at,
+          updated_at = NOW()
+        `,
+        [sessionId, totalSales, totalRevenue, totalCaptainPayments, closedAt]
+      );
 
       await registerEvent(
         "fulfillment.auction.closed",
@@ -526,7 +638,7 @@ function createFulfillmentService(deps = {}) {
   }
 
   async function getFulfillmentData() {
-    const [sales, payments] = await Promise.all([
+    const [sales, payments, sessions] = await Promise.all([
       db.query(
         `
         SELECT fs.*, bp.name AS buyer_name, bp.address AS buyer_address, cbp.species, cbp.quantity, cbp.unit, cbp.quality
@@ -536,20 +648,26 @@ function createFulfillmentService(deps = {}) {
         ORDER BY fs.recorded_at DESC
         `
       ),
-      db.query("SELECT * FROM captain_payments ORDER BY calculated_at DESC")
+      db.query("SELECT * FROM captain_payments ORDER BY boat_name, calculated_at"),
+      db.query("SELECT * FROM fulfillment_sessions")
     ]);
 
     return {
       sales: sales.rows,
-      captainPayments: payments.rows
+      captainPayments: payments.rows,
+      sessions: sessions.rows
     };
   }
 
   async function getFulfillmentSnapshot() {
     const result = await db.query(
       `
-      SELECT COUNT(*)::int AS count, COALESCE(MAX(updated_at), '1970-01-01'::timestamptz) AS updated_at
-      FROM fulfillment_sales
+      SELECT
+        (SELECT COUNT(*)::int FROM fulfillment_sales) AS count,
+        GREATEST(
+          (SELECT COALESCE(MAX(updated_at), '1970-01-01'::timestamptz) FROM fulfillment_sales),
+          (SELECT COALESCE(MAX(updated_at), '1970-01-01'::timestamptz) FROM fulfillment_sessions)
+        ) AS updated_at
       `
     );
     const row = result.rows[0];
@@ -559,6 +677,7 @@ function createFulfillmentService(deps = {}) {
   return {
     handleBuyerRegistered,
     handleMemberRegistered,
+    handleCatalogPublished,
     handleBasketCreated,
     handleBasketSold,
     handleAllBasketsFinalized,
@@ -566,7 +685,6 @@ function createFulfillmentService(deps = {}) {
     checkDelivery,
     checkDeliveryAvailability,
     completeBasket,
-    calculateCaptainPayments,
     closeAuction,
     getFulfillmentData,
     getFulfillmentSnapshot
