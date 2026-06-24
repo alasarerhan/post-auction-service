@@ -11,8 +11,25 @@
   const socket = io();
   const banner = document.getElementById("liveBanner");
   let reloadTimer;
+  let suppressUntil = 0;
+
+  // Called by the page's AJAX handler after it swaps content in place, so the
+  // change WE just made does not trigger a full-page reload that would undo it.
+  window.fulfillmentLiveSync = function (token) {
+    if (token) {
+      snapshotToken = token;
+    }
+    suppressUntil = new Date().getTime() + 2500;
+    window.clearTimeout(reloadTimer);
+    if (banner) {
+      banner.style.display = "none";
+    }
+  };
 
   function refreshSoon(message) {
+    if (new Date().getTime() < suppressUntil) {
+      return;
+    }
     if (banner) {
       banner.textContent = message;
       banner.style.display = "block";

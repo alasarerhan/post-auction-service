@@ -138,14 +138,15 @@
       };
       const noticeInfo = (typeof notice !== 'undefined' && notice) ? noticeMap[notice] : null;
     %>
+    <div id="liveBanner" class="card" style="display: none;">Live fulfillment update received. Refreshing view...</div>
+
+    <div id="app">
     <% if (noticeInfo) { %>
       <div id="toast" class="toast toast-<%= noticeInfo.type %>">
         <span class="toast-ic"><%- noticeInfo.type === 'ok' ? '&#10003;' : '!' %></span>
         <span><%= noticeInfo.text %></span>
       </div>
     <% } %>
-
-    <div id="liveBanner" class="card" style="display: none;">Live fulfillment update received. Refreshing view...</div>
 
     <div class="card">
       <h2>Post-Auction & Fulfillment</h2>
@@ -190,10 +191,10 @@
     %>
 
     <div class="stats-row">
-      <div class="stat-card"><div class="stat-label">Total sales</div><div class="stat-value"><%= totalSales %></div></div>
+      <div class="stat-card"><div class="stat-label">Total baskets</div><div class="stat-value"><%= totalSales %></div></div>
       <div class="stat-card"><div class="stat-label">Revenue</div><div class="stat-value" style="color: #16a34a;"><%= totalRevenue.toFixed(2) %></div></div>
-      <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" style="color: #854d0e;"><%= pendingCount %></div></div>
-      <div class="stat-card"><div class="stat-label">Completed</div><div class="stat-value" style="color: #16a34a;"><%= completedCount %></div></div>
+      <div class="stat-card"><div class="stat-label">Pending baskets</div><div class="stat-value" style="color: #854d0e;"><%= pendingCount %></div></div>
+      <div class="stat-card"><div class="stat-label">Completed baskets</div><div class="stat-value" style="color: #16a34a;"><%= completedCount %></div></div>
     </div>
 
     <%
@@ -217,15 +218,17 @@
       <div class="card empty-state" data-pane="finished"><p>No finished auctions yet.</p></div>
     <% } %>
 
-    <% sessionIds.forEach((sessionId) => {
+    <% const accentColors = ['#7f77dd', '#b45309', '#a21caf', '#64748b', '#ca8a04']; %>
+    <% sessionIds.forEach((sessionId, sIndex) => {
       const closed = closedSessions[sessionId];
+      const accent = accentColors[sIndex % accentColors.length];
       const meta = sessionMeta[sessionId] || {};
       const sessionSales = sales.filter((s) => s.session_id === sessionId);
       const pendingInSession = sessionSales.filter((s) => s.fulfillment_status !== 'COMPLETED').length;
       const completedInSession = sessionSales.filter((s) => s.fulfillment_status === 'COMPLETED').length;
       const expectedBaskets = meta.total_baskets != null ? Number(meta.total_baskets) : null;
     %>
-      <div class="auction-panel<%= closed ? ' closed' : ' active-pane' %>" data-pane="<%= closed ? 'finished' : 'ongoing' %>">
+      <div class="auction-panel<%= closed ? ' closed' : ' active-pane' %>" data-pane="<%= closed ? 'finished' : 'ongoing' %>" style="border-left: 4px solid <%= accent %>;">
         <div class="auction-header">
           <div>
             <div class="auction-name">
@@ -251,7 +254,7 @@
                 <span class="close-hint muted"><%= pendingInSession %> basket<%= pendingInSession > 1 ? 's' : '' %> pending</span>
                 <button type="button" class="btn btn-sm" disabled title="Complete all baskets before closing">Close auction</button>
               <% } else { %>
-                <form method="post" action="/fulfillment/sessions/<%= sessionId %>/close" style="margin:0;" onsubmit="return confirm('Close this auction? No further fulfillment actions will be allowed.');">
+                <form method="post" action="/fulfillment/sessions/<%= sessionId %>/close" style="margin:0;">
                   <button type="submit" class="btn btn-sm btn-danger">Close auction</button>
                 </form>
               <% } %>
@@ -296,9 +299,20 @@
                 <div class="ff-summary">
                   <span class="ic">&#10003;</span>
                   <% if (deliveryAvailable) { %>
-                    Delivered to <strong><%= sale.delivery_address || sale.buyer_address %></strong>
-                  <% } else if (hasPickup) { %>
-                    Picked up at <strong><%= sale.pickup_location %></strong> &middot; <%= sale.pickup_time_window %>
+                    Delivery to <strong><%= sale.delivery_address || sale.buyer_address %></strong>
+                  <% } else if (hasPickup) {
+                       // Use the real clock: only say "Picked up" once the pickup
+                       // window has actually started; before that it is upcoming.
+                       let pickupVerb = 'Picked up at';
+                       const m = String(sale.pickup_time_window || '').match(/(\d{1,2}):(\d{2})/);
+                       if (m) {
+                         const now = new Date();
+                         const winStart = new Date();
+                         winStart.setHours(Number(m[1]), Number(m[2]), 0, 0);
+                         if (now < winStart) pickupVerb = 'Pickup at';
+                       }
+                  %>
+                    <%= pickupVerb %> <strong><%= sale.pickup_location %></strong> &middot; <%= sale.pickup_time_window %>
                   <% } else { %>
                     Completed
                   <% } %>
@@ -326,13 +340,6 @@
                           <div class="result-no">&#10007; Out of delivery area</div>
                         <% } %>
                         <div class="muted" style="font-size:0.74rem; margin-top:0.2rem;"><%= sale.delivery_address %></div>
-                        <details class="step-edit">
-                          <summary>Recheck address</summary>
-                          <form method="post" action="/fulfillment/sales/<%= sale.basket_id %>/delivery/check" style="margin:0;">
-                            <input name="address" placeholder="Delivery address" value="<%= sale.delivery_address || sale.buyer_address || '' %>" />
-                            <button type="submit" class="btn">Recheck</button>
-                          </form>
-                        </details>
                       <% } %>
                     </div>
                   </div>
@@ -398,10 +405,11 @@
         <% payoutSessionIds.forEach((sessionId) => {
           const closed = closedSessions[sessionId];
           const meta = sessionMeta[sessionId] || {};
+          const accent = accentColors[sessionIds.indexOf(sessionId) % accentColors.length];
           const groups = groupPayouts(payments.filter((p) => p.session_id === sessionId));
           const sessionTotal = groups.reduce((sum, g) => sum + g.net, 0);
         %>
-          <div class="card">
+          <div class="card" style="border-left: 4px solid <%= accent %>;">
             <div class="payout-session-head">
               <div class="auction-name" style="font-size:0.98rem;">
                 <% if (meta.title) { %><%= meta.title %><% } else { %>Auction<% } %>
@@ -432,22 +440,71 @@
       <% } %>
     </div>
 
+    </div><!-- /#app -->
+
     <script>
       function showTab(name) {
         document.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
         document.querySelectorAll('[data-pane]').forEach(function (p) { p.classList.toggle('active-pane', p.dataset.pane === name); });
       }
 
-      (function () {
+      function initToast() {
         var t = document.getElementById('toast');
         if (!t) return;
-        // Remove ?notice from the URL so a refresh doesn't replay the toast
-        if (window.history && window.history.replaceState) {
-          window.history.replaceState(null, '', '/fulfillment');
-        }
         setTimeout(function () { t.classList.add('hide'); }, 3200);
         setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 3700);
-      })();
+      }
+
+      // Replace only the #app content with freshly rendered HTML — no full page
+      // reload, so scroll position and the active tab are preserved.
+      function applyContent(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var fresh = doc.getElementById('app');
+        var current = document.getElementById('app');
+        if (!fresh || !current) { window.location.reload(); return; }
+
+        var activeEl = document.querySelector('.tab.active');
+        var activeTab = activeEl ? activeEl.dataset.tab : 'ongoing';
+        var y = window.scrollY;
+
+        current.innerHTML = fresh.innerHTML;
+
+        // Keep main.js's live-reload in sync so it doesn't undo this swap
+        var newToken = doc.body.getAttribute('data-snapshot-token');
+        if (newToken) {
+          document.body.setAttribute('data-snapshot-token', newToken);
+          if (window.fulfillmentLiveSync) window.fulfillmentLiveSync(newToken);
+        }
+
+        showTab(activeTab);
+        window.scrollTo(0, y);
+        initToast();
+      }
+
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (!form.matches('#app form')) return;
+        e.preventDefault();
+
+        var action = form.getAttribute('action') || '';
+        if (action.indexOf('/close') > -1) {
+          if (!window.confirm('Close this auction? No further fulfillment actions will be allowed.')) return;
+        }
+
+        var btn = form.querySelector('button[type=submit]');
+        if (btn) btn.disabled = true;
+
+        fetch(action, {
+          method: 'POST',
+          body: new URLSearchParams(new FormData(form)),
+          headers: { 'X-Requested-With': 'fetch' }
+        })
+          .then(function (r) { return r.text(); })
+          .then(function (html) { applyContent(html); })
+          .catch(function () { window.location.reload(); });
+      });
+
+      initToast();
     </script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/main.js"></script>
