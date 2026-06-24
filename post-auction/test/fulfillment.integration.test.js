@@ -90,7 +90,7 @@ test("Post-Auction fulfillment flow persists state and records outbound events",
     "fulfillment.delivery.checked",
     "fulfillment.basket.completed",
     "fulfillment.captain.payment.calculated",
-    "fulfillment.auction.closed"
+    "auction.closed"
   ]);
   assert.equal(published.length, 6);
 });

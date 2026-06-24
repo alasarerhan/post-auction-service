@@ -383,8 +383,9 @@ function createFulfillmentService(deps = {}) {
           sessionId: sale.session_id,
           basketId: sale.basket_id,
           buyerId: sale.buyer_id,
-          pickupLocation: sale.pickup_location,
-          pickupTimeWindow: sale.pickup_time_window
+          method: "PICKUP",
+          deliveryAddress: sale.delivery_address || undefined,
+          deliverable: sale.delivery_available === null || sale.delivery_available === undefined ? undefined : Boolean(sale.delivery_available)
         },
         topics.publishedTopics.FULFILLMENT_PICKUP_SCHEDULED,
         sale.session_id
@@ -547,18 +548,25 @@ function createFulfillmentService(deps = {}) {
       );
       const paymentRow = payment.rows[0];
 
+      // The Notification contract expects a per-captain aggregate (how many
+      // baskets and the total owed), so we roll up this captain's baskets in
+      // the session even though we store each basket's payout individually.
+      const agg = await client.query(
+        "SELECT COUNT(*)::int AS cnt, COALESCE(SUM(net_amount), 0)::numeric AS total FROM captain_payments WHERE session_id = $1 AND boat_name = $2",
+        [sale.session_id, boatName]
+      );
+      const soldBasketCount = Number(agg.rows[0].cnt || 0);
+      const totalAmount = toNumber(agg.rows[0].total);
+
       await registerEvent(
         "fulfillment.captain.payment.calculated",
         sale.session_id,
         {
           sessionId: sale.session_id,
-          basketId,
           memberId: paymentRow.member_id || undefined,
-          captainName: paymentRow.captain_name || undefined,
           boatName: paymentRow.boat_name,
-          grossAmount: toNumber(paymentRow.gross_amount),
-          commissionAmount: toNumber(paymentRow.commission_amount),
-          netAmount: toNumber(paymentRow.net_amount)
+          soldBasketCount,
+          totalAmount
         },
         topics.publishedTopics.FULFILLMENT_CAPTAIN_PAYMENT_CALCULATED,
         sale.session_id
@@ -620,6 +628,16 @@ function createFulfillmentService(deps = {}) {
       const totalCaptainPayments = toNumber(payments.rows[0].total_captain_payments);
       const closedAt = new Date().toISOString();
 
+      // Unsold = expected baskets (from catalog.published) minus the sold ones.
+      const expectedRow = await client.query(
+        "SELECT total_baskets FROM fulfillment_sessions WHERE session_id = $1",
+        [sessionId]
+      );
+      const expectedBaskets = expectedRow.rows[0] && expectedRow.rows[0].total_baskets != null
+        ? Number(expectedRow.rows[0].total_baskets)
+        : totalSales;
+      const unsoldBasketCount = Math.max(0, expectedBaskets - totalSales);
+
       await client.query(
         `
         INSERT INTO fulfillment_sessions (
@@ -638,13 +656,13 @@ function createFulfillmentService(deps = {}) {
       );
 
       await registerEvent(
-        "fulfillment.auction.closed",
+        "auction.closed",
         sessionId,
         {
           sessionId,
-          totalSales,
+          soldBasketCount: totalSales,
+          unsoldBasketCount,
           totalRevenue,
-          totalCaptainPayments,
           closedAt
         },
         topics.publishedTopics.FULFILLMENT_AUCTION_CLOSED,

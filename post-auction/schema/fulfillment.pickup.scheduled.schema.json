@@ -2,18 +2,19 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "fulfillment.pickup.scheduled",
   "title": "fulfillment.pickup.scheduled",
-  "description": "Pickup information has been scheduled for a sold basket. Produced by the Post-Auction & Fulfillment Service (4).",
+  "description": "Fulfillment method for a sold basket has been arranged (pickup, with delivery context). Produced by the Post-Auction & Fulfillment Service (4).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["eventId", "sessionId", "basketId", "buyerId", "pickupLocation", "pickupTimeWindow", "occurredAt"],
+  "required": ["eventId", "sessionId", "basketId", "buyerId", "method", "occurredAt"],
   "properties": {
     "eventName": { "type": "string", "description": "Optional self-describing event type; equals the topic name. Not required." },
     "eventId": { "type": "string", "format": "uuid" },
     "sessionId": { "type": "string", "minLength": 1 },
     "basketId": { "type": "string", "minLength": 1 },
     "buyerId": { "type": "string", "minLength": 1 },
-    "pickupLocation": { "type": "string", "minLength": 1 },
-    "pickupTimeWindow": { "type": "string", "minLength": 1 },
+    "method": { "type": "string", "enum": ["PICKUP", "DELIVERY"] },
+    "deliveryAddress": { "type": "string", "minLength": 1 },
+    "deliverable": { "type": "boolean" },
     "occurredAt": { "type": "string", "format": "date-time" }
   }
 }

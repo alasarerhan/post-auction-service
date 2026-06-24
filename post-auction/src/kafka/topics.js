@@ -20,6 +20,7 @@ module.exports = {
     FULFILLMENT_DELIVERY_CHECKED: "fulfillment.delivery.checked",
     FULFILLMENT_BASKET_COMPLETED: "fulfillment.basket.completed",
     FULFILLMENT_CAPTAIN_PAYMENT_CALCULATED: "fulfillment.captain.payment.calculated",
-    FULFILLMENT_AUCTION_CLOSED: "fulfillment.auction.closed"
+    // Notification consumes this as "auction.closed" (no fulfillment. prefix).
+    FULFILLMENT_AUCTION_CLOSED: "auction.closed"
   }
 };

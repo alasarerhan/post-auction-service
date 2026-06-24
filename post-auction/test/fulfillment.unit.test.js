@@ -117,6 +117,6 @@ test("schedulePickup updates sale and publishes pickup event", async () => {
   await service.flushPublishes();
 
   assert.equal(sale.pickup_location, "Pier 1");
-  assert.equal(pool.state.events[0].pickupLocation, "Pier 1");
+  assert.equal(pool.state.events[0].method, "PICKUP");
   assert.equal(published[0].topic, "fulfillment.pickup.scheduled");
 });
