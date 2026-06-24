@@ -95,6 +95,7 @@ test("handleBasketSold records sale and queues fulfillment.sale.recorded event",
     salePrice: 120,
     occurredAt: "2026-06-21T10:00:00.000Z"
   });
+  await service.flushPublishes();
 
   assert.equal(pool.state.events.length, 1);
   assert.equal(pool.state.events[0].basketId, "basket-1");
@@ -113,6 +114,7 @@ test("schedulePickup updates sale and publishes pickup event", async () => {
   });
 
   const sale = await service.schedulePickup("basket-1", "Pier 1", "18:00-20:00");
+  await service.flushPublishes();
 
   assert.equal(sale.pickup_location, "Pier 1");
   assert.equal(pool.state.events[0].pickupLocation, "Pier 1");

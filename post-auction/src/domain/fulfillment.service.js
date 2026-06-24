@@ -69,39 +69,65 @@ function createFulfillmentService(deps = {}) {
     return { topic, key: key || payload.sessionId, payload: eventPayload };
   }
 
+  // Tracks in-flight background publishes so tests (and graceful shutdown) can
+  // wait for them. Production request handlers never await these.
+  const pendingPublishes = new Set();
+
+  async function flushEvents(events) {
+    for (const event of events) {
+      try {
+        await kafkaProducer.publish(event.topic, event.payload, event.key);
+        await db.query("UPDATE event_store SET published_at = NOW(), publish_error = NULL WHERE event_id = $1", [event.payload.eventId]);
+      } catch (error) {
+        try {
+          await db.query("UPDATE event_store SET publish_error = $2 WHERE event_id = $1", [event.payload.eventId, error.message]);
+        } catch (_) {
+          // best-effort; the event_store row stays unpublished for later retry
+        }
+      }
+    }
+  }
+
   async function withTx(action) {
     const client = await db.connect();
     const events = [];
+    let result;
     let committed = false;
 
     try {
       await client.query("BEGIN");
-      const result = await action(client, async (...args) => {
+      result = await action(client, async (...args) => {
         const event = await publishEvent(client, ...args);
         events.push(event);
         return event;
       });
       await client.query("COMMIT");
       committed = true;
-
-      for (const event of events) {
-        try {
-          await kafkaProducer.publish(event.topic, event.payload, event.key);
-          await db.query("UPDATE event_store SET published_at = NOW(), publish_error = NULL WHERE event_id = $1", [event.payload.eventId]);
-        } catch (error) {
-          await db.query("UPDATE event_store SET publish_error = $2 WHERE event_id = $1", [event.payload.eventId, error.message]);
-        }
-      }
-
-      return result;
     } catch (error) {
       if (!committed) {
-        await client.query("ROLLBACK");
+        try { await client.query("ROLLBACK"); } catch (_) { /* ignore */ }
       }
       throw error;
     } finally {
+      // Release the pooled connection BEFORE publishing so a slow/unhealthy
+      // Kafka broker can never hold a DB connection or block the HTTP response.
       client.release();
     }
+
+    // The event_store row is already committed (durable outbox); publish to
+    // Kafka in the background. Failures leave the row unpublished for retry,
+    // but they no longer slow down the request that triggered them.
+    if (events.length) {
+      const job = flushEvents(events).catch(() => {});
+      pendingPublishes.add(job);
+      job.then(() => pendingPublishes.delete(job));
+    }
+
+    return result;
+  }
+
+  async function flushPublishes() {
+    await Promise.allSettled([...pendingPublishes]);
   }
 
   async function markProcessed(client, eventId, topic) {
@@ -687,7 +713,8 @@ function createFulfillmentService(deps = {}) {
     completeBasket,
     closeAuction,
     getFulfillmentData,
-    getFulfillmentSnapshot
+    getFulfillmentSnapshot,
+    flushPublishes
   };
 }
 

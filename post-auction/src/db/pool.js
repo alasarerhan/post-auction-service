@@ -64,6 +64,11 @@ function buildPoolConfig() {
   };
 }
 
-const pool = new Pool(buildPoolConfig());
+const poolConfig = buildPoolConfig();
+poolConfig.max = Number(process.env.PGPOOL_MAX || 20);
+poolConfig.idleTimeoutMillis = 30000;
+poolConfig.connectionTimeoutMillis = 5000;
+
+const pool = new Pool(poolConfig);
 
 module.exports = pool;

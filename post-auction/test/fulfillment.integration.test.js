@@ -71,6 +71,7 @@ test("Post-Auction fulfillment flow persists state and records outbound events",
   await service.checkDelivery("basket-1");
   await service.completeBasket("basket-1");
   await service.closeAuction("session-1");
+  await service.flushPublishes();
 
   const sales = await pool.query("SELECT * FROM fulfillment_sales WHERE basket_id = 'basket-1'");
   assert.equal(sales.rows[0].fulfillment_status, "COMPLETED");
